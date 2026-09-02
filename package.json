@@ -1,0 +1,31 @@
+{
+  "name": "bigin-vibe-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vibe-coding desktop IDE for the Bigin frontend team (Lyte framework).",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev:next": "next dev -p 3210",
+    "dev:electron": "wait-on tcp:3210 && electron .",
+    "dev": "concurrently -k -n NEXT,ELECTRON -c blue,green \"npm:dev:next\" \"npm:dev:electron\"",
+    "build:next": "next build",
+    "start": "electron .",
+    "lint": "next lint",
+    "postinstall": "electron-rebuild -f -w node-pty"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.18.23",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "next": "^16.3.3",
+    "node-pty": "^1.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "concurrently": "^8.2.2",
+    "electron": "^44.0.0",
+    "wait-on": "^7.2.0"
+  }
+}

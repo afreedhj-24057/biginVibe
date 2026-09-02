@@ -1,0 +1,410 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #1e1f22;
+  color: #e6e6e6;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: #26282c;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+.topbar-title {
+  font-weight: 600;
+  font-size: 20px;
+}
+
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-name {
+  color: #9cdcfe;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge-warning {
+  font-size: 11px;
+  color: #e5c07b;
+}
+
+.error-text {
+  color: #e06c75;
+}
+
+button {
+  background: #3a3d41;
+  color: #e6e6e6;
+  border: 1px solid #4a4d51;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+button:hover:not(:disabled) {
+  background: #4a4d51;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sidebar {
+  width: 350px;
+  flex-shrink: 0;
+  border-right: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  transition: width 0.15s ease;
+}
+
+.sidebar.sidebar-collapsed {
+  width: 36px;
+}
+
+.sidebar-tabs {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #333;
+}
+
+.sidebar-tabs button {
+  flex: 1;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 8px;
+  border-bottom: 2px solid transparent;
+}
+
+.sidebar-tabs button.active {
+  border-bottom: 2px solid #61afef;
+  color: #61afef;
+}
+
+.sidebar-tabs button.sidebar-toggle {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #9a9da2;
+}
+
+.sidebar.sidebar-collapsed .sidebar-tabs {
+  justify-content: center;
+}
+
+.sidebar.sidebar-collapsed .sidebar-tabs button.sidebar-toggle {
+  margin-left: 0;
+}
+
+.sidebar-tabs button.sidebar-toggle:hover {
+  background: #3a3d41;
+  color: #e6e6e6;
+}
+
+.sidebar-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-header {
+  padding: 8px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid #2c2e33;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-empty {
+  color: #888;
+  font-style: italic;
+}
+
+.chat-message {
+  padding: 6px 8px;
+  border-radius: 6px;
+  line-height: 1.4;
+}
+
+.chat-message-user {
+  background: #2b3a4a;
+  align-self: flex-end;
+}
+
+.chat-message-assistant {
+  background: #2c2e33;
+}
+
+.chat-message-activity {
+  color: #98c379;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.chat-message-error {
+  background: #4b2a2a;
+  color: #e06c75;
+}
+
+.chat-message-label {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 2px;
+}
+
+.chat-input {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid #2c2e33;
+}
+
+.chat-input textarea {
+  flex: 1;
+  resize: none;
+  min-height: 36px;
+  background: #1a1b1e;
+  color: #e6e6e6;
+  border: 1px solid #3a3d41;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.main-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.preview-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.preview-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #26282c;
+  border-bottom: 1px solid #333;
+}
+
+.preview-address-form {
+  flex: 1;
+  min-width: 0;
+}
+
+.preview-address-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #1c1e22;
+  border: 1px solid #3a3d42;
+  border-radius: 14px;
+  color: #d4d4d4;
+  font-family: monospace;
+  font-size: 13px;
+  padding: 5px 12px;
+  outline: none;
+}
+
+.preview-address-input:focus {
+  border-color: #61afef;
+  background: #202329;
+}
+
+.preview-address-input::placeholder {
+  color: #666;
+}
+
+.preview-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.preview-body {
+  flex: 1;
+  position: relative;
+  background: #111;
+}
+
+.preview-webview {
+  width: 100%;
+  height: 100%;
+}
+
+.preview-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #888;
+  padding: 20px;
+  text-align: center;
+}
+
+.preview-error-banner {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #4b2a2a;
+  color: #e06c75;
+  padding: 6px 10px;
+}
+
+.terminal-panel {
+  border-top: 1px solid #333;
+  background: #18191b;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.terminal-resize-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+}
+
+.terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  background: #202225;
+  font-weight: 600;
+}
+
+.terminal-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.terminal-xterm-container {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px 8px;
+}
+
+.terminal-xterm-container .xterm {
+  height: 100%;
+}
+
+.changes-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.changes-list {
+  overflow-y: auto;
+  max-height: 40%;
+  border-bottom: 1px solid #2c2e33;
+}
+
+.changes-item {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid #24262a;
+}
+
+.changes-item.selected {
+  background: #2b3a4a;
+}
+
+.changes-status {
+  color: #e5c07b;
+  width: 70px;
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.changes-diff {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  font-family: monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.changes-empty,
+.changes-error {
+  padding: 12px;
+  color: #888;
+}
