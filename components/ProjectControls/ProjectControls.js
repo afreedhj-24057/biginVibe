@@ -70,6 +70,14 @@ export default function ProjectControls({ project, envStatus, onProjectOpened, o
                   ⚠ not detected as Lyte
                 </span>
               )}
+              {project.bigiBotFallbackMode && !project.hasBigiBotConfig && (
+                <span
+                  className="badge-warning"
+                  title={project.bigiBotConfigError || "Project BigiBot config is incomplete."}
+                >
+                  ⚠ Running without project BigiBot config.
+                </span>
+              )}
             </span>
             {running ? (
               <button disabled={busy} onClick={handleStopEnv}>

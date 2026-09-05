@@ -9,6 +9,7 @@ const GitManager = require("../services/git/GitManager");
 const BigiBotService = require("../services/bigibot/BigiBotService");
 const runtimeBus = require("../services/runtimeBus");
 const { configurePreviewClientCertificatePolicy } = require("../services/preview/PreviewClientCertificatePolicy");
+const { configurePreviewStaticResourceInterceptor } = require("../services/preview/PreviewStaticResourceInterceptor");
 
 const isDev = !app.isPackaged;
 const NEXT_DEV_URL = "http://localhost:3210";
@@ -52,7 +53,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    title: "Bigin Vibe Code Editor",
+    title: "BiginVibe - Bigin Vibe Code Editor",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -91,6 +92,11 @@ app.whenReady().then(() => {
   // module (setCertificateVerifyProc-based) was removed after it was
   // found to cause intermittent load failures on unrelated public sites.
   configurePreviewClientCertificatePolicy();
+
+  // Static resource interceptor: redirects CDN URLs (static.localzohocdn.com)
+  // to local static server (localhost:3000) for development/preview purposes.
+  // See PreviewStaticResourceInterceptor.js for the URL rewriting logic.
+  configurePreviewStaticResourceInterceptor();
 
   createWindow();
   app.on("activate", () => {

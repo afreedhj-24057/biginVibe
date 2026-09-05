@@ -1,4 +1,5 @@
 "use client";
+import MarkdownText from "./MarkdownText";
 
 const ICONS = {
   tool_completed: "✓",
@@ -12,7 +13,7 @@ export default function ChatMessage({ message }) {
     return (
       <div className="chat-message chat-message-user">
         <div className="chat-message-label">You</div>
-        <div>{message.text}</div>
+        <MarkdownText text={message.text} />
       </div>
     );
   }
@@ -30,7 +31,7 @@ export default function ChatMessage({ message }) {
     return (
       <div className="chat-message chat-message-error">
         <div className="chat-message-label">Error</div>
-        <div>{message.text}</div>
+        <MarkdownText text={message.text} />
       </div>
     );
   }
@@ -39,7 +40,7 @@ export default function ChatMessage({ message }) {
   return (
     <div className="chat-message chat-message-assistant">
       <div className="chat-message-label">BigiBot</div>
-      <div>{message.text}</div>
+      <MarkdownText text={message.text} />
     </div>
   );
 }

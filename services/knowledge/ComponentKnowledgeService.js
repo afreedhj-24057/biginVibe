@@ -5,10 +5,10 @@ const path = require("path");
  * Provides lightweight, on-demand access to a project's Bigin/Lyte
  * component knowledge base (see spec section 7):
  *
- *   .github/bigibot/component/component-registry.json
- *   .github/bigibot/component/<component>.md
- *   .github/bigibot/patterns/
- *   .github/bigibot/conventions.md
+ *   bigibot/components/component-registry.json
+ *   bigibot/components/<component>.md
+ *   bigibot/patterns/
+ *   bigibot/conventions.md
  *
  * The registry is small and cheap to load in full. Individual component
  * Markdown docs are only read from disk when a request actually references
@@ -27,7 +27,7 @@ class ComponentKnowledgeService {
 
   loadRegistry() {
     if (!this.isAvailable()) return [];
-    const registryPath = path.join(this.dir, "component", "component-registry.json");
+    const registryPath = path.join(this.dir, "components", "component-registry.json");
     if (!fs.existsSync(registryPath)) return [];
     try {
       const raw = JSON.parse(fs.readFileSync(registryPath, "utf8"));
@@ -55,7 +55,14 @@ class ComponentKnowledgeService {
       .filter((w) => w.length > 2);
 
     const scored = registry.map((entry) => {
-      const haystack = [entry.name, entry.description, ...(entry.tags || [])]
+      const haystack = [
+        entry.name,
+        entry.tag,
+        entry.category,
+        entry.description,
+        ...(entry.tags || []),
+        ...(entry.keywords || []),
+      ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
@@ -72,9 +79,17 @@ class ComponentKnowledgeService {
 
   /** Loads the Markdown documentation for a single registry entry, if present. */
   loadComponentDoc(entry) {
-    if (!this.isAvailable() || !entry || !entry.doc) return null;
-    const docPath = path.join(this.dir, "component", entry.doc);
-    if (!fs.existsSync(docPath)) return null;
+    if (!this.isAvailable() || !entry) return null;
+
+    const docRef = entry.documentation || entry.doc;
+    if (!docRef) return null;
+
+    const candidatePaths = [
+      path.join(this.dir, docRef),
+      path.join(this.dir, "components", docRef),
+    ];
+    const docPath = candidatePaths.find((p) => fs.existsSync(p));
+    if (!docPath) return null;
     return fs.readFileSync(docPath, "utf8");
   }
 
@@ -104,7 +119,7 @@ class ComponentKnowledgeService {
     for (const entry of matches) {
       const doc = this.loadComponentDoc(entry);
       if (doc) {
-        sections.push(`## Component: ${entry.name}\n${doc}`);
+        sections.push(`## Component: ${entry.name || entry.tag || "unknown"}\n${doc}`);
       }
     }
 

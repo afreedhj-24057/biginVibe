@@ -42,6 +42,10 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
   // current location after navigation; diverges from loadedUrl while the
   // user is actively typing an edit that hasn't been submitted yet.
   const [addressValue, setAddressValue] = useState("");
+  // Chrome-style back/forward availability, mirrored from the webview's own
+  // in-page navigation history after every navigation event.
+  const [canGoBack, setCanGoBack] = useState(false);
+  const [canGoForward, setCanGoForward] = useState(false);
 
   const hasLoadedRef = useRef(false);
   const lastGenerationRef = useRef(0);
@@ -88,8 +92,16 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
     // — after the user presses Enter, after redirects, and after the user
     // navigates around inside the app itself (SPA route changes), exactly
     // like a real browser's address bar.
-    const onDidNavigate = (e) => setAddressValue(e.url);
-    const onDidNavigateInPage = (e) => setAddressValue(e.url);
+    const onDidNavigate = (e) => {
+      setAddressValue(e.url);
+      setCanGoBack(el.canGoBack());
+      setCanGoForward(el.canGoForward());
+    };
+    const onDidNavigateInPage = (e) => {
+      setAddressValue(e.url);
+      setCanGoBack(el.canGoBack());
+      setCanGoForward(el.canGoForward());
+    };
 
     el.addEventListener("did-start-loading", onStartLoading);
     el.addEventListener("did-stop-loading", onStopLoading);
@@ -132,6 +144,18 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
     webviewRef.current?.reload();
   }
 
+  function goBack() {
+    if (webviewRef.current?.canGoBack()) {
+      webviewRef.current.goBack();
+    }
+  }
+
+  function goForward() {
+    if (webviewRef.current?.canGoForward()) {
+      webviewRef.current.goForward();
+    }
+  }
+
   function openDevTools() {
     webviewRef.current?.openDevTools();
   }
@@ -139,6 +163,65 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
   return (
     <div className="preview-panel">
       <div className="preview-toolbar">
+        <div className="preview-nav-actions">
+          <button
+            className="preview-icon-btn"
+            disabled={!loadedUrl || !canGoBack}
+            onClick={goBack}
+            aria-label="Back"
+            title="Back"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M10 3L5 8L10 13"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            className="preview-icon-btn"
+            disabled={!loadedUrl || !canGoForward}
+            onClick={goForward}
+            aria-label="Forward"
+            title="Forward"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M6 3L11 8L6 13"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            className="preview-icon-btn"
+            disabled={!loadedUrl}
+            onClick={reload}
+            aria-label="Reload"
+            title="Reload"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+              <path
+                d="M13.5 3.5V7H10"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
         <form className="preview-address-form" onSubmit={handleAddressSubmit}>
           <input
             ref={addressInputRef}
@@ -153,9 +236,6 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
           />
         </form>
         <div className="preview-actions">
-          <button disabled={!loadedUrl} onClick={reload}>
-            Reload
-          </button>
           <button disabled={!loadedUrl} onClick={openDevTools}>
             DevTools
           </button>

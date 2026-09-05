@@ -50,9 +50,15 @@ it's ready (`wait-on` + `concurrently`).
 - Optional Redirector configuration: `<project>/.bigin/redirector.json`
   (see `services/environment/RedirectorManager.js` for the contract). If
   absent, the environment falls back to the raw detected dev-server URL.
-- Optional BigiBot knowledge base: `<project>/.github/bigibot/` with
-  `component/component-registry.json` as the discovery index and per-component
+- BigiBot knowledge base: `<project>/bigibot/` (source of truth) with
+  `components/component-registry.json` as the discovery index and per-component
   Markdown docs loaded on demand (see `services/knowledge/ComponentKnowledgeService.js`).
+- Required BigiBot agent file: `<project>/.opencode/agent/BigiBot.md`.
+- By default, project open fails fast if either BigiBot file is missing.
+  To allow fallback mode, set `BIGIBOT_FALLBACK_MODE=true`:
+  - missing agent file -> uses default OpenCode agent
+  - missing knowledge base -> runs without BigiBot KB context
+  - UI shows: `Running without project BigiBot config.`
 
 ## Notes / follow-ups
 

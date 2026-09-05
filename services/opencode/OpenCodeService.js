@@ -1,6 +1,12 @@
 const { spawn } = require("child_process");
 const { EVENTS } = require("../../shared/events");
+const { BIGIBOT_MODEL } = require("../../shared/opencodeConfig");
 const bus = require("../runtimeBus");
+const {
+  CHAT_CLASSIFICATION,
+  classifyMessagePart,
+  extractVisibleAssistantText,
+} = require("./OpenCodeEventClassifier");
 
 // ---------------------------------------------------------------------------
 // Root-cause context
@@ -142,6 +148,20 @@ class OpenCodeService {
     this.opencode = null;
     this.project = null;
     this.sessionsByProject = new Map(); // projectPath -> sessionId
+    this.activePromptBySession = new Map(); // sessionId -> { assistantMessageId }
+    this.messageRoleBySession = new Map(); // sessionId -> Map<messageId, role>
+  }
+
+  _rememberMessageRole(sessionId, messageId, role) {
+    if (!sessionId || !messageId || !role) return;
+    if (!this.messageRoleBySession.has(sessionId)) {
+      this.messageRoleBySession.set(sessionId, new Map());
+    }
+    this.messageRoleBySession.get(sessionId).set(messageId, role);
+  }
+
+  _roleForMessage(sessionId, messageId) {
+    return this.messageRoleBySession.get(sessionId)?.get(messageId) || null;
   }
 
   async _loadSdk() {
@@ -218,16 +238,38 @@ class OpenCodeService {
    * @param {string} sessionId
    * @param {string} text - the user's natural-language request, already
    *   enriched with any Bigin/Lyte component context by BigiBotService.
+   * @param {{ agent?: string }} [options]
    */
-  async sendPrompt(sessionId, text) {
+  async sendPrompt(sessionId, text, options = {}) {
     if (!this.opencode) throw new Error("OpenCode server is not running for this project.");
     const { client } = this.opencode;
+    this.activePromptBySession.set(sessionId, { assistantMessageId: null });
     bus.emitEvent(EVENTS.AGENT_THINKING, { sessionId });
     try {
       const result = await client.session.prompt({
         path: { id: sessionId },
-        body: { parts: [{ type: "text", text }] },
+        body: {
+          model: BIGIBOT_MODEL,
+          agent: options.agent,
+          parts: [{ type: "text", text }],
+        },
       });
+      const active = this.activePromptBySession.get(sessionId);
+      const assistantMessageId = result?.data?.info?.id || active?.assistantMessageId || null;
+      if (assistantMessageId) {
+        this._rememberMessageRole(sessionId, assistantMessageId, "assistant");
+      }
+
+      const finalText = extractVisibleAssistantText(result?.data?.parts, assistantMessageId);
+      if (finalText) {
+        bus.emitEvent(EVENTS.AGENT_MESSAGE, {
+          sessionId,
+          messageId: assistantMessageId,
+          text: finalText,
+          kind: "final",
+        });
+      }
+
       bus.emitEvent(EVENTS.AGENT_COMPLETED, { sessionId });
       return result.data;
     } catch (err) {
@@ -236,6 +278,8 @@ class OpenCodeService {
         error: `BigiBot could not complete the requested change: ${err.message}`,
       });
       throw err;
+    } finally {
+      this.activePromptBySession.delete(sessionId);
     }
   }
 
@@ -266,20 +310,57 @@ class OpenCodeService {
   _forwardServerEvent(event) {
     const { type, properties } = event;
     switch (type) {
+      case "message.updated": {
+        const info = properties?.info;
+        if (!info?.sessionID || !info?.id) break;
+        this._rememberMessageRole(info.sessionID, info.id, info.role);
+
+        const active = this.activePromptBySession.get(info.sessionID);
+        if (active && info.role === "assistant" && !active.assistantMessageId) {
+          active.assistantMessageId = info.id;
+        }
+        break;
+      }
       case "message.part.updated": {
         const part = properties?.part;
+        const sessionId = part?.sessionID;
+        if (!part || !sessionId) break;
+
+        const active = this.activePromptBySession.get(sessionId);
+        if (!active) break;
+
+        const role = this._roleForMessage(sessionId, part.messageID);
+        if (role !== "assistant") break;
+
         if (part?.type === "tool") {
           const evt = part.state?.status === "completed"
             ? EVENTS.AGENT_TOOL_COMPLETED
             : EVENTS.AGENT_TOOL_STARTED;
-          bus.emitEvent(evt, { sessionId: properties.sessionID, tool: part.tool, state: part.state });
-        } else if (part?.type === "text") {
-          bus.emitEvent(EVENTS.AGENT_MESSAGE, { sessionId: properties.sessionID, text: part.text });
+          bus.emitEvent(evt, { sessionId, tool: part.tool, state: part.state });
+          break;
+        }
+
+        const classification = classifyMessagePart(part, active.assistantMessageId);
+        if (classification !== CHAT_CLASSIFICATION.USER_VISIBLE_ASSISTANT_RESPONSE) {
+          break;
+        }
+
+        if (part.messageID !== active.assistantMessageId) {
+          break;
+        }
+
+        if (typeof properties?.delta === "string" && properties.delta.length) {
+          bus.emitEvent(EVENTS.AGENT_MESSAGE, {
+            sessionId,
+            messageId: part.messageID,
+            text: properties.delta,
+            kind: "delta",
+          });
         }
         break;
       }
       case "file.edited": {
-        bus.emitEvent(EVENTS.AGENT_FILE_CHANGED, { path: properties?.path });
+        bus.emitEvent(EVENTS.AGENT_FILE_CHANGED, { path: properties?.file });
         break;
       }
       case "session.error": {
@@ -308,6 +389,8 @@ class OpenCodeService {
     // project (or a previous open of the same project) can never be reused
     // after a shutdown. A fresh session will be created on the next request.
     this.sessionsByProject.clear();
+    this.activePromptBySession.clear();
+    this.messageRoleBySession.clear();
   }
 }
 

@@ -3,6 +3,11 @@ const path = require("path");
 const os = require("os");
 const { EVENTS } = require("../../shared/events");
 const bus = require("../runtimeBus");
+const {
+  validateBigiBotProjectConfig,
+  buildBigiBotConfigError,
+} = require("../bigibot/BigiBotProjectConfig");
+const { BIGIBOT_FALLBACK_MODE } = require("../../shared/opencodeConfig");
 
 const RECENTS_FILE = path.join(os.homedir(), ".bigin-vibe", "recent-projects.json");
 
@@ -346,8 +351,13 @@ function detectProject(projectPath) {
   const projectType = isLyteProject ? "bigin" : "generic";
 
   // --- Knowledge base -------------------------------------------------------
-  const knowledgeBaseDir = path.join(projectPath, ".github", "bigibot");
+  // Source of truth is strictly <project>/bigibot.
+  const knowledgeBaseDir = path.join(projectPath, "bigibot");
   const hasKnowledgeBase = fs.existsSync(knowledgeBaseDir);
+
+  // --- BigiBot config preflight ---------------------------------------------
+  const bigiBotConfig = validateBigiBotProjectConfig(projectPath);
+  const bigiBotConfigError = bigiBotConfig.ok ? null : buildBigiBotConfigError(bigiBotConfig);
 
   // --- Dev setup ------------------------------------------------------------
   const { packageManager, devScript, devEntryPoint, lyteBin, nodeBin } = _detectDevSetup(projectPath, pkg);
@@ -361,6 +371,9 @@ function detectProject(projectPath) {
     lyteSignal,
     hasKnowledgeBase,
     knowledgeBaseDir: hasKnowledgeBase ? knowledgeBaseDir : null,
+    hasBigiBotConfig: bigiBotConfig.ok,
+    bigiBotConfigError,
+    bigiBotFallbackMode: BIGIBOT_FALLBACK_MODE,
     packageManager,
     devScript,
     devEntryPoint,
@@ -423,6 +436,11 @@ class ProjectManager {
     if (!detection.supported) {
       bus.emitEvent(EVENTS.PROJECT_ERROR, { error: detection.reason });
       throw new Error(detection.reason);
+    }
+
+    if (!detection.hasBigiBotConfig && !BIGIBOT_FALLBACK_MODE) {
+      bus.emitEvent(EVENTS.PROJECT_ERROR, { error: detection.bigiBotConfigError });
+      throw new Error(detection.bigiBotConfigError);
     }
 
     this.currentProject = {

@@ -8,14 +8,20 @@ import ChangesPanel from "../components/Changes/ChangesPanel";
 import PreviewPanel from "../components/Preview/PreviewPanel";
 import TerminalPanel from "../components/Terminal/TerminalPanel";
 
+const SIDEBAR_MIN_WIDTH = 300;
+const SIDEBAR_MAX_WIDTH = 500;
+const SIDEBAR_DEFAULT_WIDTH = 400;
+
 export default function Page() {
   const [project, setProject] = useState(null);
   const [envStatus, setEnvStatus] = useState(null);
   const [messages, setMessages] = useState([]);
   const [sidebarTab, setSidebarTab] = useState("chat"); // chat | changes
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [terminalCollapsed, setTerminalCollapsed] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(220);
+  const [agentWorking, setAgentWorking] = useState(false);
   const [changesRefreshToken, setChangesRefreshToken] = useState(0);
   // Bumped whenever the dev server (re)starts and establishes a fresh
   // initial preview URL. PreviewPanel resets its address bar to the new
@@ -57,6 +63,59 @@ export default function Page() {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
+  const startSidebarResize = useCallback((e) => {
+    if (sidebarCollapsed) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+
+    function onMouseMove(moveEvt) {
+      const next = startWidth + (moveEvt.clientX - startX);
+      const clamped = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, next));
+      setSidebarWidth(clamped);
+    }
+
+    function onMouseUp() {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, [sidebarCollapsed, sidebarWidth]);
+
+  const applyAssistantMessage = useCallback((payload) => {
+    const text = payload?.text;
+    if (!text) return;
+
+    const messageId = payload?.messageId;
+    const kind = payload?.kind || "final";
+
+    setMessages((prev) => {
+      if (!messageId) return [...prev, { role: "assistant", text }];
+
+      const idx = prev.findIndex(
+        (m) => m.role === "assistant" && m.opencodeMessageId === messageId
+      );
+
+      if (idx === -1) {
+        return [...prev, { role: "assistant", text, opencodeMessageId: messageId }];
+      }
+
+      const next = [...prev];
+      const existing = next[idx];
+      next[idx] = {
+        ...existing,
+        text: kind === "delta" ? `${existing.text || ""}${text}` : text,
+      };
+      return next;
+    });
+  }, []);
+
   useRuntimeEvents((evt) => {
     switch (evt.type) {
       // -----------------------------------------------------------------------
@@ -67,6 +126,7 @@ export default function Page() {
         // Full workspace snapshot — update project + reset chat.
         setProject(evt.payload.project);
         setMessages([]);
+        setAgentWorking(false);
         if (evt.payload.devServer || evt.payload.previewUrl) {
           setEnvStatus({ devServer: evt.payload.devServer, previewUrl: evt.payload.previewUrl });
         } else {
@@ -77,6 +137,7 @@ export default function Page() {
         setProject(null);
         setEnvStatus(null);
         setMessages([]);
+        setAgentWorking(false);
         break;
 
       // -----------------------------------------------------------------------
@@ -85,11 +146,13 @@ export default function Page() {
       case "project.opened":
         setProject(evt.payload);
         setMessages([]);
+        setAgentWorking(false);
         break;
       case "project.closed":
         setProject(null);
         setEnvStatus(null);
         setMessages([]);
+        setAgentWorking(false);
         break;
       case "project.error":
         addMessage({ role: "error", text: evt.payload.error });
@@ -114,33 +177,32 @@ export default function Page() {
         break;
 
       case "agent.thinking":
-        addMessage({ role: "activity", kind: "tool_started", text: "Analyzing request…" });
+        setAgentWorking(true);
         break;
       case "agent.tool.started":
-        addMessage({ role: "activity", kind: "tool_started", text: `Running ${evt.payload.tool}…` });
         break;
       case "agent.tool.completed":
-        addMessage({ role: "activity", kind: "tool_completed", text: `${evt.payload.tool} completed` });
         break;
       case "agent.file.changed":
-        addMessage({ role: "activity", kind: "file_changed", text: `Updated ${evt.payload.path}` });
         setChangesRefreshToken((t) => t + 1);
         break;
       case "agent.message":
-        addMessage({ role: "assistant", text: evt.payload.text });
+        setAgentWorking(false);
+        applyAssistantMessage(evt.payload);
         break;
       case "agent.completed":
-        addMessage({ role: "activity", kind: "tool_completed", text: "Preview updated." });
+        setAgentWorking(false);
         setChangesRefreshToken((t) => t + 1);
         break;
       case "agent.error":
+        setAgentWorking(false);
         addMessage({ role: "error", text: evt.payload.error });
         break;
 
       default:
         break;
     }
-  });
+  }, [addMessage, applyAssistantMessage]);
 
   return (
     <div className="app-shell">
@@ -152,7 +214,10 @@ export default function Page() {
         onBeforeStart={activateTerminal}
       />
       <div className="app-body">
-        <div className={`sidebar ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+        <div
+          className={`sidebar ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+          style={{ width: sidebarCollapsed ? 36 : sidebarWidth }}
+        >
           <div className="sidebar-tabs">
             {!sidebarCollapsed && (
               <>
@@ -197,12 +262,26 @@ export default function Page() {
           </div>
           <div className="sidebar-content" style={{ display: sidebarCollapsed ? "none" : "flex" }}>
             {sidebarTab === "chat" ? (
-              <ChatPanel project={project} messages={messages} onSend={addMessage} />
+              <ChatPanel
+                project={project}
+                messages={messages}
+                onSend={addMessage}
+                agentWorking={agentWorking}
+              />
             ) : (
               <ChangesPanel project={project} refreshToken={changesRefreshToken} />
             )}
           </div>
         </div>
+        {!sidebarCollapsed && (
+          <div
+            className="sidebar-resize-handle"
+            onMouseDown={startSidebarResize}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize chat panel"
+          />
+        )}
         <div className="main-area">
           <PreviewPanel
             previewUrl={envStatus?.previewUrl}

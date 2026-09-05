@@ -83,13 +83,13 @@ button:disabled {
 }
 
 .sidebar {
-  width: 350px;
+  width: 400px;
   flex-shrink: 0;
   border-right: 1px solid #333;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  transition: width 0.15s ease;
+  transition: width 0.12s ease;
 }
 
 .sidebar.sidebar-collapsed {
@@ -150,11 +150,37 @@ button:disabled {
   display: flex;
 }
 
+.sidebar-resize-handle {
+  width: 6px;
+  margin-left: -3px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
+}
+
+.sidebar-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.sidebar-resize-handle:hover::before {
+  background: #4f84b8;
+}
+
 .chat-panel {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .chat-header {
@@ -166,10 +192,12 @@ button:disabled {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .chat-empty {
@@ -177,19 +205,119 @@ button:disabled {
   font-style: italic;
 }
 
+.chat-working-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid #31353b;
+  background: linear-gradient(120deg, #252a31 0%, #2b3139 40%, #252a31 100%);
+  background-size: 220% 100%;
+  color: #b8c0cc;
+  font-size: 12px;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transform: translateY(2px);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 220ms ease, max-height 220ms ease, margin 220ms ease;
+}
+
+.chat-working-indicator.visible {
+  opacity: 1;
+  max-height: 40px;
+  margin-top: 4px;
+  transform: translateY(0);
+  animation: chat-working-shimmer 2.2s linear infinite;
+}
+
+.chat-working-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #67c587;
+  box-shadow: 0 0 0 rgba(103, 197, 135, 0.45);
+  animation: chat-working-pulse 1.3s ease-in-out infinite;
+}
+
+.chat-working-text {
+  font-weight: 500;
+}
+
+.chat-working-ellipsis {
+  display: inline-flex;
+  min-width: 16px;
+}
+
+.chat-working-ellipsis span {
+  opacity: 0.2;
+  animation: chat-working-dots 1.2s infinite;
+}
+
+.chat-working-ellipsis span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.chat-working-ellipsis span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes chat-working-pulse {
+  0% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(103, 197, 135, 0.42);
+  }
+  65% {
+    transform: scale(1);
+    box-shadow: 0 0 0 8px rgba(103, 197, 135, 0);
+  }
+  100% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(103, 197, 135, 0);
+  }
+}
+
+@keyframes chat-working-dots {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes chat-working-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -40% 0;
+  }
+}
+
 .chat-message {
   padding: 6px 8px;
   border-radius: 6px;
   line-height: 1.4;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-message-user {
   background: #2b3a4a;
   align-self: flex-end;
+  margin-inline-start: 25px;
 }
 
 .chat-message-assistant {
   background: #2c2e33;
+  margin-inline-end: 25px;
 }
 
 .chat-message-activity {
@@ -209,22 +337,100 @@ button:disabled {
   margin-bottom: 2px;
 }
 
-.chat-input {
-  display: flex;
-  gap: 6px;
+.markdown-text {
+  min-width: 0;
+}
+
+.md-p {
+  margin: 0;
+}
+
+.md-p + .md-p,
+.md-pre + .md-p,
+.md-p + .md-pre,
+.md-pre + .md-pre {
+  margin-top: 8px;
+}
+
+.markdown-text code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  background: #22262d;
+  border: 1px solid #313743;
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+.md-pre {
+  margin: 0;
   padding: 8px;
+  border-radius: 8px;
+  background: #161a20;
+  border: 1px solid #2f3540;
+  overflow-x: auto;
+}
+
+.md-pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.markdown-text a {
+  color: #8bc4ff;
+  text-decoration: underline;
+}
+
+.chat-input {
+  display: block;
+  padding: 8px 10px 10px;
   border-top: 1px solid #2c2e33;
 }
 
+.chat-composer {
+  position: relative;
+}
+
+.chat-send-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.chat-send-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.chat-send-btn.is-cancel {
+  background: #442326;
+  border-color: #5b2c30;
+  color: #f4c2c7;
+}
+
+.chat-send-btn.is-cancel:hover:not(:disabled) {
+  background: #553035;
+}
+
 .chat-input textarea {
-  flex: 1;
+  width: 100%;
   resize: none;
   min-height: 36px;
+  max-height: 150px;
   background: #1a1b1e;
   color: #e6e6e6;
   border: 1px solid #3a3d41;
-  border-radius: 4px;
-  padding: 6px 8px;
+  border-radius: 10px;
+  padding: 10px 52px 10px 12px;
+  line-height: 1.45;
 }
 
 .main-area {
@@ -280,6 +486,37 @@ button:disabled {
 .preview-actions {
   display: flex;
   gap: 6px;
+}
+
+.preview-nav-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.preview-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #d4d4d4;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.preview-icon-btn:hover:not(:disabled) {
+  background: #33363b;
+  border-color: #3a3d42;
+}
+
+.preview-icon-btn:disabled {
+  color: #555;
+  cursor: default;
 }
 
 .preview-body {

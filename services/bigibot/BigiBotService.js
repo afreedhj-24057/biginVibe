@@ -1,5 +1,10 @@
 const OpenCodeService = require("../opencode/OpenCodeService");
 const ComponentKnowledgeService = require("../knowledge/ComponentKnowledgeService");
+const { BIGIBOT_AGENT, BIGIBOT_FALLBACK_MODE } = require("../../shared/opencodeConfig");
+const {
+  validateBigiBotProjectConfig,
+  buildBigiBotConfigError,
+} = require("./BigiBotProjectConfig");
 
 const SYSTEM_PRIMER = `You are BigiBot, the coding agent for the Bigin frontend team.
 
@@ -66,7 +71,31 @@ class BigiBotService {
     return this.knowledgeByProject.get(project.path);
   }
 
+  _resolveAgentForProject(project) {
+    const validation = validateBigiBotProjectConfig(project.path);
+    const missingAgent = validation.missing.some((m) => m.type === "agent");
+
+    if (missingAgent) {
+      if (!BIGIBOT_FALLBACK_MODE) {
+        throw new Error(buildBigiBotConfigError(validation));
+      }
+      return null;
+    }
+
+    return BIGIBOT_AGENT;
+  }
+
+  _assertKnowledgeBaseForProject(project) {
+    const validation = validateBigiBotProjectConfig(project.path);
+    const missingKnowledge = validation.missing.some((m) => m.type === "knowledge");
+
+    if (missingKnowledge && !BIGIBOT_FALLBACK_MODE) {
+      throw new Error(buildBigiBotConfigError(validation));
+    }
+  }
+
   async ensureSession(project) {
+    const agent = this._resolveAgentForProject(project);
     let sessionId = this.opencode.getSessionId(project);
     if (!sessionId) {
       const session = await this.opencode.createSession(project);
@@ -78,10 +107,12 @@ class BigiBotService {
       // Access the SDK client through the OpenCodeService's public opencode property.
       const client = this.opencode.opencode?.client;
       if (client) {
-        await client.session.prompt({
-          path: { id: sessionId },
-          body: { noReply: true, parts: [{ type: "text", text: SYSTEM_PRIMER }] },
-        });
+        const body = {
+          noReply: true,
+          parts: [{ type: "text", text: SYSTEM_PRIMER }],
+        };
+        if (agent) body.agent = agent;
+        await client.session.prompt({ path: { id: sessionId }, body });
       }
       this.primedProjects.add(project.path);
     }
@@ -89,6 +120,8 @@ class BigiBotService {
   }
 
   async sendRequest(project, userRequest) {
+    this._assertKnowledgeBaseForProject(project);
+    const agent = this._resolveAgentForProject(project);
     const sessionId = await this.ensureSession(project);
     const knowledge = this._knowledgeFor(project);
     const context = knowledge.buildContextForRequest(userRequest);
@@ -104,7 +137,7 @@ class BigiBotService {
       prompt += `\n\n---\nRelevant Bigin/Lyte reference material (use only if applicable, verify against actual source before relying on it):\n\n${context}`;
     }
 
-    return this.opencode.sendPrompt(sessionId, prompt);
+    return this.opencode.sendPrompt(sessionId, prompt, { agent });
   }
 
   async cancel(project) {
