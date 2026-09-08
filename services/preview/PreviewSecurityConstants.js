@@ -18,6 +18,8 @@ const APPROVED_PREVIEW_HOSTS = new Set([
   "bigindev.localzoho.com",
   "biginqa.localzoho.com",
   "bigininteg1.localzoho.com",
+  "biginauto.localzoho.com",
+  "biginops1.localzoho.com",
   "bigin.localzoho.com",
 ]);
 

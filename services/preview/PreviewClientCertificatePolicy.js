@@ -65,7 +65,7 @@ const { PREVIEW_PARTITION, APPROVED_PREVIEW_HOSTS } = require("./PreviewSecurity
  *      belongs to the preview's own named partition (PREVIEW_PARTITION,
  *      shared via PreviewSecurityConstants.js so the <webview> element and
  *      this policy always agree on exactly which session is in scope).
- *   2. Hostname allowlist — only the four approved LocalZoho hostnames
+ *   2. Hostname allowlist — only the approved LocalZoho hostnames
  *      (APPROVED_PREVIEW_HOSTS, same shared source of truth) trigger
  *      automatic selection.
  *   3. Everything else — any other host, or any request outside the

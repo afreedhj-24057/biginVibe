@@ -1,5 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const fs = require("fs");
 const path = require("path");
+const os = require("os");
 
 const projectManager = require("../services/project/ProjectManager");
 const workspaceManager = require("../services/workspace/WorkspaceManager");
@@ -7,12 +9,14 @@ const EnvironmentManager = require("../services/environment/EnvironmentManager")
 const TerminalManager = require("../services/terminal/TerminalManager");
 const GitManager = require("../services/git/GitManager");
 const BigiBotService = require("../services/bigibot/BigiBotService");
+const { BIGIBOT_MODEL } = require("../shared/opencodeConfig");
 const runtimeBus = require("../services/runtimeBus");
 const { configurePreviewClientCertificatePolicy } = require("../services/preview/PreviewClientCertificatePolicy");
-const { configurePreviewStaticResourceInterceptor } = require("../services/preview/PreviewStaticResourceInterceptor");
+const { configurePreviewStaticResourceInterceptor, setLocalStaticServerPort } = require("../services/preview/PreviewStaticResourceInterceptor");
 
 const isDev = !app.isPackaged;
 const NEXT_DEV_URL = "http://localhost:3210";
+const INSTANCES_FILE = path.join(os.homedir(), ".bigin-vibe", "instances.json");
 
 let mainWindow = null;
 const terminalManager = new TerminalManager();
@@ -42,8 +46,14 @@ runtimeBus.on("runtime-event", (evt) => {
       devServer: environmentManager.getStatus().devServer,
       previewUrl: evt.payload.previewUrl,
     });
+    // Point the CDN->local static resource interceptor at whichever port
+    // this project's dev server actually came up on (EnvironmentManager
+    // picks the first free port starting at 3000, so it isn't always
+    // 3000) — see PreviewStaticResourceInterceptor.js for the rationale.
+    setLocalStaticServerPort(evt.payload.port);
   } else if (evt.type === "environment.stopped") {
     workspaceManager.updateEnvStatus({ devServer: { running: false }, previewUrl: null });
+    setLocalStaticServerPort(null);
   } else if (evt.type === "environment.error") {
     workspaceManager.updateEnvStatus({ devServer: environmentManager.getStatus().devServer });
   }
@@ -75,6 +85,35 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+function ensureInstancesFile() {
+  const dir = path.dirname(INSTANCES_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(INSTANCES_FILE)) {
+    fs.writeFileSync(INSTANCES_FILE, JSON.stringify([], null, 2));
+  }
+}
+
+function readInstances() {
+  ensureInstancesFile();
+  try {
+    const raw = fs.readFileSync(INSTANCES_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => item && typeof item === "object")
+      .map((item, idx) => ({
+        id: item.id || `instance-${idx}`,
+        name: String(item.name || item.url || "Bigin Instance"),
+        url: typeof item.url === "string" ? item.url : "",
+        environment: typeof item.environment === "string" ? item.environment : "instance",
+        favorite: !!item.favorite,
+      }))
+      .filter((item) => item.url);
+  } catch {
+    return [];
+  }
 }
 
 // Forward every runtime event straight to the renderer over one channel.
@@ -134,7 +173,28 @@ ipcMain.handle("workspace:current", () => workspaceManager.getSnapshot());
 // IPC: Project
 // ---------------------------------------------------------------------------
 ipcMain.handle("project:pickDirectory", async () => {
-  const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+  const envDefaultPath = process.env.BIGINVIBE_DEFAULT_PROJECT_PATH || '/Users/afreedh-24057/Documents/Checkouts/Activity_Split/ignite/webapps/BiginClient';
+  const currentProjectPath = workspaceManager.getActiveProject()?.path;
+  const recentProjectPath = projectManager.getRecentProjects()?.[0]?.path;
+  const candidates = [envDefaultPath, currentProjectPath, recentProjectPath, os.homedir()];
+
+  let defaultPath;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        defaultPath = candidate;
+        break;
+      }
+    } catch {
+      // Ignore invalid candidates and continue to the next fallback.
+    }
+  }
+
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory"],
+    defaultPath,
+  });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
 });
@@ -228,14 +288,15 @@ ipcMain.handle("terminal:list", () => terminalManager.listSessions());
 // .path (see OpenCodeService._ensureServerForProject). The renderer cannot
 // influence the working directory — it only sends the natural-language text.
 // ---------------------------------------------------------------------------
-ipcMain.handle("chat:sendMessage", async (_evt, text) => {
+ipcMain.handle("chat:sendMessage", async (_evt, text, mode = "build") => {
   const project = workspaceManager.getActiveProject();
   if (!project) {
     throw new Error(
-      "No project is currently open.\n\nOpen a project before asking BigiBot to modify code."
+      "No project is currently open.\n\nOpen a project before asking the agent to modify code."
     );
   }
-  const result = await bigiBot.sendRequest(project, text);
+  const effectiveMode = mode === "bigibot" && project.hasBigiBotAgent ? "bigibot" : "build";
+  const result = await bigiBot.sendRequest(project, text, { mode: effectiveMode });
   // Update the workspace snapshot with the live session id so workspace:current
   // always reflects the currently active OpenCode session.
   const sessionId = bigiBot.opencode.getSessionId(project);
@@ -246,6 +307,12 @@ ipcMain.handle("chat:cancel", async () => {
   const project = workspaceManager.getActiveProject();
   if (project) await bigiBot.cancel(project);
 });
+ipcMain.handle("chat:model", async () => BIGIBOT_MODEL);
+ipcMain.handle("chat:cavemanStatus", async () => {
+  return bigiBot.getCavemanStatus();
+});
+
+ipcMain.handle("preview:instances", async () => readInstances());
 
 // ---------------------------------------------------------------------------
 // IPC: Git / Changes

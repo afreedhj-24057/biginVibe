@@ -16,12 +16,17 @@ export default function Page() {
   const [project, setProject] = useState(null);
   const [envStatus, setEnvStatus] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [activeModel, setActiveModel] = useState(null);
+  const [cavemanStatus, setCavemanStatus] = useState(null);
+  const [selectedAgentMode, setSelectedAgentMode] = useState("build");
   const [sidebarTab, setSidebarTab] = useState("chat"); // chat | changes
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [terminalCollapsed, setTerminalCollapsed] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [agentWorking, setAgentWorking] = useState(false);
+  const [agentActivities, setAgentActivities] = useState([]);
+  const [agentActivityExpanded, setAgentActivityExpanded] = useState(false);
   const [changesRefreshToken, setChangesRefreshToken] = useState(0);
   // Bumped whenever the dev server (re)starts and establishes a fresh
   // initial preview URL. PreviewPanel resets its address bar to the new
@@ -29,20 +34,31 @@ export default function Page() {
   // manually-typed URL/path survives unrelated re-renders and is only
   // overridden by an explicit start/restart, per its own address-bar spec.
   const [previewGeneration, setPreviewGeneration] = useState(0);
-  // Bumped whenever the Terminal should be opened + focused (e.g. the user
-  // clicked "Start Dev Server"). TerminalPanel watches this and calls
-  // term.focus() — it doesn't matter what the value is, only that it changes.
-  const [terminalFocusToken, setTerminalFocusToken] = useState(0);
 
   useEffect(() => {
     // Hydrate from the authoritative workspace snapshot on mount.
     // workspace:current returns { project, devServer, previewUrl, ... }.
     bridge.workspace.current().then((ws) => {
       if (ws?.project) setProject(ws.project);
+      if (ws?.project) {
+        setSelectedAgentMode(ws.project.hasBigiBotAgent ? "bigibot" : "build");
+      }
       if (ws?.devServer || ws?.previewUrl) {
         setEnvStatus({ devServer: ws.devServer, previewUrl: ws.previewUrl });
       }
     });
+    Promise.resolve(bridge.chat.model()).then((model) => {
+      if (model) setActiveModel(model);
+    }).catch(() => {});
+    Promise.resolve(bridge.chat.cavemanStatus?.()).then((status) => {
+      if (status) setCavemanStatus(status);
+    }).catch(() => {});
+  }, []);
+
+  const refreshCavemanStatus = useCallback(() => {
+    Promise.resolve(bridge.chat.cavemanStatus?.()).then((status) => {
+      if (status) setCavemanStatus(status);
+    }).catch(() => {});
   }, []);
 
   // The dev server now runs inside the integrated Terminal's own PTY
@@ -50,14 +66,6 @@ export default function Page() {
   // xterm.js's FitAddon, driven by the panel's actual pixel dimensions —
   // far more accurate than a window-size heuristic). No separate
   // environment-level resize plumbing is needed.
-
-  // Opens/expands the Terminal and focuses it. Passed to ProjectControls so
-  // clicking "Start Dev Server" brings the Terminal into view before typing
-  // the command there.
-  const activateTerminal = useCallback(() => {
-    setTerminalCollapsed(false);
-    setTerminalFocusToken((t) => t + 1);
-  }, []);
 
   const addMessage = useCallback((msg) => {
     setMessages((prev) => [...prev, msg]);
@@ -94,25 +102,60 @@ export default function Page() {
 
     const messageId = payload?.messageId;
     const kind = payload?.kind || "final";
+    const model = payload?.model || null;
+    const agentMode = payload?.agentMode || "build";
 
     setMessages((prev) => {
-      if (!messageId) return [...prev, { role: "assistant", text }];
+      if (!messageId) {
+        return [...prev, { role: "assistant", text, model: model || activeModel, agentMode }];
+      }
 
       const idx = prev.findIndex(
         (m) => m.role === "assistant" && m.opencodeMessageId === messageId
       );
 
       if (idx === -1) {
-        return [...prev, { role: "assistant", text, opencodeMessageId: messageId }];
+        return [...prev, {
+          role: "assistant",
+          text,
+          opencodeMessageId: messageId,
+          model: model || activeModel,
+          agentMode,
+        }];
       }
 
       const next = [...prev];
       const existing = next[idx];
       next[idx] = {
         ...existing,
+        model: existing.model || model || activeModel,
+        agentMode: existing.agentMode || agentMode,
         text: kind === "delta" ? `${existing.text || ""}${text}` : text,
       };
       return next;
+    });
+  }, [activeModel]);
+
+  const applyAgentActivity = useCallback((payload) => {
+    const allowedKinds = new Set(["task", "subagent", "tool", "command", "processing"]);
+    const allowedStatus = new Set(["running", "completed", "failed", "cancelled"]);
+    const kind = typeof payload?.kind === "string" && allowedKinds.has(payload.kind)
+      ? payload.kind
+      : null;
+    const status = typeof payload?.status === "string" && allowedStatus.has(payload.status)
+      ? payload.status
+      : null;
+    const label = typeof payload?.label === "string" ? payload.label.trim() : "";
+    if (!kind || !status || !label) return;
+
+    setAgentActivities((prev) => {
+      const now = Date.now();
+      const next = prev.slice(-11);
+      const last = next[next.length - 1];
+      if (last && last.kind === kind && last.status === status && last.label === label && (now - last.at) < 900) {
+        return next;
+      }
+      return [...next, { kind, status, label, at: now }];
     });
   }, []);
 
@@ -126,18 +169,26 @@ export default function Page() {
         // Full workspace snapshot — update project + reset chat.
         setProject(evt.payload.project);
         setMessages([]);
+        setAgentActivities([]);
+        setAgentActivityExpanded(false);
+        setSelectedAgentMode(evt.payload.project?.hasBigiBotAgent ? "bigibot" : "build");
         setAgentWorking(false);
         if (evt.payload.devServer || evt.payload.previewUrl) {
           setEnvStatus({ devServer: evt.payload.devServer, previewUrl: evt.payload.previewUrl });
         } else {
           setEnvStatus(null);
         }
+        refreshCavemanStatus();
         break;
       case "workspace.closed":
         setProject(null);
         setEnvStatus(null);
         setMessages([]);
+        setAgentActivities([]);
+        setAgentActivityExpanded(false);
+        setSelectedAgentMode("build");
         setAgentWorking(false);
+        refreshCavemanStatus();
         break;
 
       // -----------------------------------------------------------------------
@@ -146,13 +197,21 @@ export default function Page() {
       case "project.opened":
         setProject(evt.payload);
         setMessages([]);
+        setAgentActivities([]);
+        setAgentActivityExpanded(false);
+        setSelectedAgentMode(evt.payload?.hasBigiBotAgent ? "bigibot" : "build");
         setAgentWorking(false);
+        refreshCavemanStatus();
         break;
       case "project.closed":
         setProject(null);
         setEnvStatus(null);
         setMessages([]);
+        setAgentActivities([]);
+        setAgentActivityExpanded(false);
+        setSelectedAgentMode("build");
         setAgentWorking(false);
+        refreshCavemanStatus();
         break;
       case "project.error":
         addMessage({ role: "error", text: evt.payload.error });
@@ -178,6 +237,11 @@ export default function Page() {
 
       case "agent.thinking":
         setAgentWorking(true);
+        setAgentActivities([]);
+        setAgentActivityExpanded(false);
+        break;
+      case "agent.activity":
+        applyAgentActivity(evt.payload);
         break;
       case "agent.tool.started":
         break;
@@ -192,26 +256,27 @@ export default function Page() {
         break;
       case "agent.completed":
         setAgentWorking(false);
+        setAgentActivityExpanded(false);
         setChangesRefreshToken((t) => t + 1);
+        refreshCavemanStatus();
         break;
       case "agent.error":
         setAgentWorking(false);
+        setAgentActivityExpanded(false);
         addMessage({ role: "error", text: evt.payload.error });
+        refreshCavemanStatus();
         break;
 
       default:
         break;
     }
-  }, [addMessage, applyAssistantMessage]);
+  }, [addMessage, applyAssistantMessage, applyAgentActivity, refreshCavemanStatus]);
 
   return (
     <div className="app-shell">
       <ProjectControls
         project={project}
-        envStatus={envStatus}
         onProjectOpened={setProject}
-        onEnvChange={setEnvStatus}
-        onBeforeStart={activateTerminal}
       />
       <div className="app-body">
         <div
@@ -262,12 +327,18 @@ export default function Page() {
           </div>
           <div className="sidebar-content" style={{ display: sidebarCollapsed ? "none" : "flex" }}>
             {sidebarTab === "chat" ? (
-              <ChatPanel
-                project={project}
-                messages={messages}
-                onSend={addMessage}
-                agentWorking={agentWorking}
-              />
+                <ChatPanel
+                  project={project}
+                  messages={messages}
+                  onSend={addMessage}
+                  agentWorking={agentWorking}
+                  cavemanStatus={cavemanStatus}
+                  activityEntries={agentActivities}
+                  activityExpanded={agentActivityExpanded}
+                  onToggleActivityExpanded={() => setAgentActivityExpanded((v) => !v)}
+                  selectedAgentMode={selectedAgentMode}
+                  onAgentModeChange={setSelectedAgentMode}
+                />
             ) : (
               <ChangesPanel project={project} refreshToken={changesRefreshToken} />
             )}
@@ -297,7 +368,6 @@ export default function Page() {
         onToggleCollapse={() => setTerminalCollapsed((c) => !c)}
         height={terminalHeight}
         onResize={setTerminalHeight}
-        focusToken={terminalFocusToken}
       />
     </div>
   );

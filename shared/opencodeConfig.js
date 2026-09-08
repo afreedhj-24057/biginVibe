@@ -13,9 +13,22 @@
 const DEFAULT_MODEL = "github-copilot/gpt-5.3-codex";
 const DEFAULT_AGENT = "BigiBot";
 
+function readBool(name, fallback = false) {
+  if (!(name in process.env)) return fallback;
+  return process.env[name] === "true";
+}
+
 const BIGIBOT_MODEL = process.env.BIGIBOT_MODEL || DEFAULT_MODEL;
 const BIGIBOT_AGENT = process.env.BIGIBOT_AGENT || DEFAULT_AGENT;
-const BIGIBOT_FALLBACK_MODE = process.env.BIGIBOT_FALLBACK_MODE === "true";
+const BIGIBOT_FALLBACK_MODE = readBool("BIGIBOT_FALLBACK_MODE", false);
+
+const BIGIBOT_CAVEMAN_ENABLED = readBool("BIGIBOT_CAVEMAN_ENABLED", false);
+const BIGIBOT_CAVEMAN_AUTOSTART = readBool("BIGIBOT_CAVEMAN_AUTOSTART", false);
+const BIGIBOT_CAVEMAN_URL = process.env.BIGIBOT_CAVEMAN_URL || "http://127.0.0.1:8787";
+const BIGIBOT_CAVEMAN_PROVIDER = (process.env.BIGIBOT_CAVEMAN_PROVIDER || "openai").toLowerCase();
+const BIGIBOT_CAVEMAN_BASE_URL = process.env.BIGIBOT_CAVEMAN_BASE_URL || "";
+const BIGIBOT_CAVEMAN_MODE = process.env.BIGIBOT_CAVEMAN_MODE || "compress";
+const BIGIBOT_CAVEMAN_CONFIG = process.env.BIGIBOT_CAVEMAN_CONFIG || "";
 
 module.exports = {
   BIGIBOT_MODEL,
@@ -23,4 +36,11 @@ module.exports = {
   BIGIBOT_AGENT,
   DEFAULT_AGENT,
   BIGIBOT_FALLBACK_MODE,
+  BIGIBOT_CAVEMAN_ENABLED,
+  BIGIBOT_CAVEMAN_AUTOSTART,
+  BIGIBOT_CAVEMAN_URL,
+  BIGIBOT_CAVEMAN_PROVIDER,
+  BIGIBOT_CAVEMAN_BASE_URL,
+  BIGIBOT_CAVEMAN_MODE,
+  BIGIBOT_CAVEMAN_CONFIG,
 };

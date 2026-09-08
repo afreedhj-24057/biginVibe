@@ -18,7 +18,12 @@ Rules you must always follow:
 - Make the minimal change necessary to satisfy the request. Preserve
   existing behavior that wasn't part of the request.
 - After making changes, verify them (re-read the modified files / run
-  relevant checks) before reporting completion.`;
+  relevant checks) before reporting completion.
+- Keep responses concise by default.
+- Prefer short answers (3-6 bullets max) unless the user explicitly asks
+  for deep detail.
+- For catalog/list requests, return a compact sample and ask whether to
+  expand, instead of dumping long inventories.`;
 
 /**
  * Returns the workspace-context block that is prepended to every user
@@ -85,23 +90,15 @@ class BigiBotService {
     return BIGIBOT_AGENT;
   }
 
-  _assertKnowledgeBaseForProject(project) {
-    const validation = validateBigiBotProjectConfig(project.path);
-    const missingKnowledge = validation.missing.some((m) => m.type === "knowledge");
-
-    if (missingKnowledge && !BIGIBOT_FALLBACK_MODE) {
-      throw new Error(buildBigiBotConfigError(validation));
-    }
-  }
-
-  async ensureSession(project) {
-    const agent = this._resolveAgentForProject(project);
+  async ensureSession(project, options = {}) {
+    const mode = this._normalizeMode(options.mode);
+    const agent = mode === "bigibot" ? this._resolveAgentForProject(project) : null;
     let sessionId = this.opencode.getSessionId(project);
     if (!sessionId) {
       const session = await this.opencode.createSession(project);
       sessionId = session.id;
     }
-    if (!this.primedProjects.has(project.path)) {
+    if (mode === "bigibot" && !this.primedProjects.has(project.path)) {
       // noReply priming: gives the model its Bigin-specific instructions as
       // context without triggering a visible assistant turn.
       // Access the SDK client through the OpenCodeService's public opencode property.
@@ -119,12 +116,43 @@ class BigiBotService {
     return sessionId;
   }
 
-  async sendRequest(project, userRequest) {
-    this._assertKnowledgeBaseForProject(project);
-    const agent = this._resolveAgentForProject(project);
-    const sessionId = await this.ensureSession(project);
-    const knowledge = this._knowledgeFor(project);
-    const context = knowledge.buildContextForRequest(userRequest);
+  _normalizeMode(mode) {
+    return mode === "bigibot" ? "bigibot" : "build";
+  }
+
+  _assertBigiBotModeAllowed(project) {
+    if (!project?.hasBigiBotAgent) {
+      throw new Error("BigiBot agent is not available for this project.");
+    }
+    const validation = validateBigiBotProjectConfig(project.path);
+    if (!validation.ok) {
+      throw new Error(buildBigiBotConfigError(validation));
+    }
+  }
+
+  async _sendWithRetry(project, sessionId, prompt, options) {
+    try {
+      return await this.opencode.sendPrompt(sessionId, prompt, options);
+    } catch (err) {
+      const message = String(err?.message || err || "");
+      const isFetchFailure = /fetch failed|ECONNREFUSED|socket hang up|network error/i.test(message);
+      if (!isFetchFailure) throw err;
+
+      await this.opencode.shutdown().catch(() => {});
+      const refreshedSessionId = await this.ensureSession(project, { mode: options.mode });
+      return this.opencode.sendPrompt(refreshedSessionId, prompt, options);
+    }
+  }
+
+  async sendRequest(project, userRequest, options = {}) {
+    const mode = this._normalizeMode(options.mode);
+    if (mode === "bigibot") this._assertBigiBotModeAllowed(project);
+
+    const agent = mode === "bigibot" ? this._resolveAgentForProject(project) : null;
+    const sessionId = await this.ensureSession(project, { mode });
+    const context = mode === "bigibot"
+      ? this._knowledgeFor(project).buildContextForRequest(userRequest)
+      : null;
 
     // Build the prompt in layers:
     //   1. Workspace context header (defense-in-depth path scoping)
@@ -137,7 +165,7 @@ class BigiBotService {
       prompt += `\n\n---\nRelevant Bigin/Lyte reference material (use only if applicable, verify against actual source before relying on it):\n\n${context}`;
     }
 
-    return this.opencode.sendPrompt(sessionId, prompt, { agent });
+    return this._sendWithRetry(project, sessionId, prompt, { agent, mode });
   }
 
   async cancel(project) {
@@ -152,6 +180,10 @@ class BigiBotService {
     // primer. Without this, the primer is skipped for any project that was
     // previously primed in the same app session.
     this.primedProjects.clear();
+  }
+
+  async getCavemanStatus() {
+    return this.opencode.getCavemanStatus();
   }
 }
 

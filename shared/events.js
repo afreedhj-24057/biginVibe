@@ -32,6 +32,7 @@ const EVENTS = {
   AGENT_THINKING: "agent.thinking",
   AGENT_TOOL_STARTED: "agent.tool.started",
   AGENT_TOOL_COMPLETED: "agent.tool.completed",
+  AGENT_ACTIVITY: "agent.activity",
   AGENT_FILE_CHANGED: "agent.file.changed",
   AGENT_MESSAGE: "agent.message",
   AGENT_COMPLETED: "agent.completed",

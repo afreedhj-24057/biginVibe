@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { bridge } from "../../lib/bridge";
 
-export default function ProjectControls({ project, envStatus, onProjectOpened, onEnvChange, onBeforeStart }) {
+export default function ProjectControls({ project, onProjectOpened }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -21,16 +21,14 @@ export default function ProjectControls({ project, envStatus, onProjectOpened, o
     }
   }
 
-  async function handleStartEnv() {
+  async function handleSwitch() {
     setError(null);
+    const dir = await bridge.project.pickDirectory();
+    if (!dir) return;
     setBusy(true);
-    // Bring the integrated Terminal into view and focus it BEFORE the
-    // command is typed there, so the user sees "$ lyte serve --port 3000"
-    // appear as it happens rather than discovering it after the fact.
-    onBeforeStart?.();
     try {
-      const status = await bridge.environment.start();
-      onEnvChange(status);
+      const switched = await bridge.project.switch(dir);
+      onProjectOpened(switched);
     } catch (err) {
       setError(err.message || String(err));
     } finally {
@@ -38,21 +36,25 @@ export default function ProjectControls({ project, envStatus, onProjectOpened, o
     }
   }
 
-  async function handleStopEnv() {
+  async function handleClose() {
+    setError(null);
     setBusy(true);
     try {
-      await bridge.environment.stop();
-      onEnvChange({ devServer: { running: false }, previewUrl: null });
+      await bridge.project.close();
+      onProjectOpened(null);
+    } catch (err) {
+      setError(err.message || String(err));
     } finally {
       setBusy(false);
     }
   }
 
-  const running = envStatus?.devServer?.running;
-
   return (
     <div className="topbar">
-      <div className="topbar-title">BiginVibe</div>
+      <div className="topbar-brand">
+        <div className="topbar-title">BiginVibe</div>
+        <div className="topbar-credit-badge">Crafted by Bigin UI Team</div>
+      </div>
       <div className="topbar-controls">
         {project ? (
           <>
@@ -70,7 +72,7 @@ export default function ProjectControls({ project, envStatus, onProjectOpened, o
                   ⚠ not detected as Lyte
                 </span>
               )}
-              {project.bigiBotFallbackMode && !project.hasBigiBotConfig && (
+              {!project.hasBigiBotConfig && (
                 <span
                   className="badge-warning"
                   title={project.bigiBotConfigError || "Project BigiBot config is incomplete."}
@@ -79,22 +81,19 @@ export default function ProjectControls({ project, envStatus, onProjectOpened, o
                 </span>
               )}
             </span>
-            {running ? (
-              <button disabled={busy} onClick={handleStopEnv}>
-                Stop Dev Server
-              </button>
-            ) : (
-              <button disabled={busy} onClick={handleStartEnv}>
-                Start Dev Server
-              </button>
-            )}
+            <button disabled={busy} onClick={handleSwitch}>
+              Switch Project
+            </button>
+            <button disabled={busy} onClick={handleClose}>
+              Close Project
+            </button>
           </>
         ) : (
           <button disabled={busy} onClick={handleOpen}>
             Open Project
           </button>
         )}
-        {error && <span className="error-text">{error}</span>}
+        {error ? <span className="error-text">{error}</span> : null}
       </div>
     </div>
   );

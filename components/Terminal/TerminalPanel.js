@@ -25,7 +25,7 @@ import { bridge } from "../../lib/bridge";
  *     straight into xterm.js via term.write(), which has a full ANSI
  *     terminal-emulation engine — so `clear` genuinely clears the screen.
  */
-export default function TerminalPanel({ project, collapsed, onToggleCollapse, height, onResize, focusToken }) {
+export default function TerminalPanel({ project, collapsed, onToggleCollapse, height, onResize }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitAddonRef = useRef(null);
@@ -116,7 +116,7 @@ export default function TerminalPanel({ project, collapsed, onToggleCollapse, he
       if (evt.type === "terminal.output") {
         termRef.current?.write(evt.payload.data);
       } else if (evt.type === "terminal.exit") {
-        termRef.current?.writeln(`\r\n[shell exited — click Restart to open a new one]\r`);
+        termRef.current?.writeln(`\r\n[shell exited]\r`);
       }
     });
     return unsubscribe;
@@ -146,32 +146,6 @@ export default function TerminalPanel({ project, collapsed, onToggleCollapse, he
     return () => window.removeEventListener("resize", onWindowResize);
   }, [height, collapsed]);
 
-  // Bring the Terminal into focus whenever the parent bumps focusToken —
-  // e.g. when the user clicks "Start Dev Server", so the command they just
-  // triggered is immediately visible and the terminal is ready for input.
-  useEffect(() => {
-    if (!focusToken) return;
-    termRef.current?.focus();
-  }, [focusToken]);
-
-  async function restartSession() {
-    if (sessionIdRef.current) {
-      await bridge.terminal.stop(sessionIdRef.current);
-      sessionIdRef.current = null;
-      setSessionId(null);
-    }
-    if (!project) return;
-    const fitAddon = fitAddonRef.current;
-    const term = termRef.current;
-    fitAddon?.fit();
-    const session = await bridge.terminal.create(term?.cols || 80, term?.rows || 24);
-    if (!session) return;
-    sessionIdRef.current = session.id;
-    setSessionId(session.id);
-    term?.clear();
-    term?.writeln(`Terminal ready in ${session.cwd}\r`);
-  }
-
   function startResize(e) {
     resizingRef.current = true;
     const startY = e.clientY;
@@ -196,10 +170,33 @@ export default function TerminalPanel({ project, collapsed, onToggleCollapse, he
       <div className="terminal-header">
         <span>Terminal</span>
         <div className="terminal-header-actions">
-          <button onClick={restartSession} disabled={!project} title="Kill and restart the shell">
-            Restart
+          <button
+            className="terminal-icon-btn"
+            onClick={onToggleCollapse}
+            title={collapsed ? "Expand terminal" : "Collapse terminal"}
+            aria-label={collapsed ? "Expand terminal" : "Collapse terminal"}
+          >
+            {collapsed ? (
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M3 10L8 5L13 10"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M4 4L12 12M12 4L4 12"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                />
+              </svg>
+            )}
           </button>
-          <button onClick={onToggleCollapse}>{collapsed ? "Expand" : "Collapse"}</button>
         </div>
       </div>
       <div

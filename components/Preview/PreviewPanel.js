@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { bridge } from "../../lib/bridge";
 
 /**
  * PreviewManager-equivalent for the renderer: controls an Electron <webview>
@@ -46,9 +47,19 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
   // in-page navigation history after every navigation event.
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
+  const [instances, setInstances] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] = useState(0);
 
   const hasLoadedRef = useRef(false);
   const lastGenerationRef = useRef(0);
+  const hideSuggestionsTimerRef = useRef(null);
+
+  const filteredInstances = instances.filter((item) => {
+    const q = addressValue.trim().toLowerCase();
+    if (!q) return true;
+    return item.name.toLowerCase().includes(q) || item.url.toLowerCase().includes(q);
+  });
 
   // Reset everything when the active project changes — a different
   // project's dev server/URL must never linger in the preview.
@@ -76,6 +87,25 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
       lastGenerationRef.current = previewGeneration;
     }
   }, [previewUrl, previewGeneration]);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.resolve(bridge.preview.instances?.())
+      .then((data) => {
+        if (!mounted) return;
+        setInstances(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setInstances([]);
+      });
+    return () => {
+      mounted = false;
+      if (hideSuggestionsTimerRef.current) {
+        clearTimeout(hideSuggestionsTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const el = webviewRef.current;
@@ -138,6 +168,67 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
     setLoadedUrl(target);
     hasLoadedRef.current = true;
     addressInputRef.current?.blur();
+    setShowSuggestions(false);
+  }
+
+  function applySuggestion(item) {
+    if (!item?.url) return;
+    setAddressValue(item.url);
+    setErrorMessage(null);
+    setStatus("loading");
+    if (webviewRef.current) {
+      webviewRef.current.loadURL(item.url).catch((err) => {
+        setStatus("error");
+        setErrorMessage(err.message || String(err));
+      });
+    }
+    setLoadedUrl(item.url);
+    hasLoadedRef.current = true;
+    setShowSuggestions(false);
+    addressInputRef.current?.blur();
+  }
+
+  function handleAddressFocus() {
+    if (hideSuggestionsTimerRef.current) {
+      clearTimeout(hideSuggestionsTimerRef.current);
+    }
+    setShowSuggestions(true);
+    setHighlightedSuggestionIndex(0);
+    Promise.resolve(bridge.preview.instances?.())
+      .then((data) => {
+        setInstances(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {});
+  }
+
+  function handleAddressBlur() {
+    hideSuggestionsTimerRef.current = setTimeout(() => {
+      setShowSuggestions(false);
+    }, 120);
+  }
+
+  function handleAddressKeyDown(e) {
+    if (!showSuggestions || !filteredInstances.length) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightedSuggestionIndex((idx) => (idx + 1) % filteredInstances.length);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedSuggestionIndex((idx) => (idx - 1 + filteredInstances.length) % filteredInstances.length);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setShowSuggestions(false);
+      return;
+    }
+    if (e.key === "Enter" && filteredInstances[highlightedSuggestionIndex]) {
+      e.preventDefault();
+      applySuggestion(filteredInstances[highlightedSuggestionIndex]);
+    }
   }
 
   function reload() {
@@ -207,13 +298,13 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
-                d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"
+                d="M13.7 11A5.5 5.5 0 1 1 14 6"
                 stroke="currentColor"
                 strokeWidth="1.6"
                 strokeLinecap="round"
               />
               <path
-                d="M13.5 3.5V7H10"
+                d="M14 2V6H10"
                 stroke="currentColor"
                 strokeWidth="1.6"
                 strokeLinecap="round"
@@ -223,17 +314,47 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
           </button>
         </div>
         <form className="preview-address-form" onSubmit={handleAddressSubmit}>
-          <input
-            ref={addressInputRef}
-            className="preview-address-input"
-            type="text"
-            value={addressValue}
-            onChange={(e) => setAddressValue(e.target.value)}
-            placeholder={envRunning ? "Enter a URL and press Enter…" : "No preview yet"}
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-          />
+          <div className="preview-address-wrap">
+            <input
+              ref={addressInputRef}
+              className="preview-address-input"
+              type="text"
+              value={addressValue}
+              onChange={(e) => {
+                setAddressValue(e.target.value);
+                setHighlightedSuggestionIndex(0);
+              }}
+              onFocus={handleAddressFocus}
+              onBlur={handleAddressBlur}
+              onKeyDown={handleAddressKeyDown}
+              placeholder={envRunning ? "Enter a URL and press Enter..." : "No preview yet"}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+            />
+            {showSuggestions && filteredInstances.length > 0 && (
+              <div className="preview-instance-menu" role="listbox" aria-label="Bigin instances">
+                <div className="preview-instance-menu-title">Bigin Instances</div>
+                {filteredInstances.map((item, idx) => (
+                  <button
+                    key={item.id || `${item.url}-${idx}`}
+                    type="button"
+                    className={`preview-instance-item ${idx === highlightedSuggestionIndex ? "is-active" : ""}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applySuggestion(item);
+                    }}
+                  >
+                    <span className={`preview-instance-badge env-${item.environment || "instance"}`}>
+                      {item.environment || "instance"}
+                    </span>
+                    <span className="preview-instance-name">{item.name}</span>
+                    <span className="preview-instance-url">{item.url}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </form>
         <div className="preview-actions">
           <button disabled={!loadedUrl} onClick={openDevTools}>

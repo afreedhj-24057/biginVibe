@@ -20,8 +20,48 @@ const { PREVIEW_PARTITION } = require("./PreviewSecurityConstants");
 // Matches: https://static.localzohocdn.com/bigin.*?/biginclient/{filename}.{cacheBuster}
 const CDN_URL_PATTERN = /https:\/\/static\.localzohocdn\.com\/bigin.*?\/biginclient\/(.+?)\.([^.]+)\.(.+)$/;
 
-// Local static server base URL (configurable via environment or hardcoded default)
+// ---------------------------------------------------------------------------
+// Dynamic local static server target
+// ---------------------------------------------------------------------------
+// The user browses a real Bigin development instance (bigindev, biginqa,
+// bigininteg1, biginauto, biginops1, etc.) inside the preview <webview>, NOT
+// a fixed localhost URL. That remote page's HTML references its JS/CSS
+// bundles from the CDN (static.localzohocdn.com/bigin*/biginclient/...).
+// This interceptor rewrites those CDN requests to instead be served by the
+// LOCAL dev server that EnvironmentManager just started for the open
+// project — so edits show up live against a real Bigin environment.
+//
+// EnvironmentManager picks whatever port is actually free/listening (see
+// EnvironmentManager._findAvailablePort, which tries 3000, 3001, 3002, ...
+// sequentially) — it is NOT always 3000. electron/main.js updates the
+// target port here via setLocalStaticServerPort() every time it observes an
+// "environment.started" runtime event (EVENTS.ENVIRONMENT_STARTED carries
+// the resolved `port`), so this always reflects whichever port the dev
+// server for the CURRENTLY open project is actually running on.
+// ---------------------------------------------------------------------------
+let localStaticServerPort = null;
+
+/**
+ * Called by electron/main.js whenever EnvironmentManager reports a
+ * successfully started dev server, with the port it actually detected
+ * (ENVIRONMENT_STARTED payload's `port` field). Pass `null` on
+ * "environment.stopped" so no requests are redirected while no dev server
+ * is running for the active project.
+ *
+ * @param {number|null} port
+ */
+function setLocalStaticServerPort(port) {
+  localStaticServerPort = port || null;
+}
+
+// Local static server base URL. Prefers the live port reported by
+// EnvironmentManager (see setLocalStaticServerPort above); falls back to
+// LOCAL_STATIC_SERVER_URL/localhost:3000 only if no dev server has reported
+// in yet (e.g. very first request racing app startup).
 const getLocalStaticServerUrl = () => {
+  if (localStaticServerPort) {
+    return `http://localhost:${localStaticServerPort}`;
+  }
   return process.env.LOCAL_STATIC_SERVER_URL || "http://localhost:3000";
 };
 
@@ -61,4 +101,8 @@ function configurePreviewStaticResourceInterceptor() {
   });
 }
 
-module.exports = { configurePreviewStaticResourceInterceptor, getLocalStaticServerUrl };
+module.exports = {
+  configurePreviewStaticResourceInterceptor,
+  getLocalStaticServerUrl,
+  setLocalStaticServerPort,
+};

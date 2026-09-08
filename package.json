@@ -5,9 +5,11 @@
   "description": "Vibe-coding desktop IDE for the Bigin frontend team (Lyte framework).",
   "main": "electron/main.js",
   "scripts": {
+    "dev:caveman:preflight": "node scripts/preflight-caveman.js",
     "dev:next": "next dev -p 3210",
     "dev:electron": "wait-on tcp:3210 && electron .",
     "dev": "concurrently -k -n NEXT,ELECTRON -c blue,green \"npm:dev:next\" \"npm:dev:electron\"",
+    "dev:caveman": "npm run dev:caveman:preflight && BIGIBOT_CAVEMAN_ENABLED=true BIGIBOT_CAVEMAN_AUTOSTART=true BIGIBOT_CAVEMAN_PROVIDER=openai BIGIBOT_CAVEMAN_URL=http://127.0.0.1:8787 BIGIBOT_CAVEMAN_MODE=compress npm run dev",
     "build:next": "next build",
     "start": "electron .",
     "lint": "next lint",

@@ -358,6 +358,7 @@ function detectProject(projectPath) {
   // --- BigiBot config preflight ---------------------------------------------
   const bigiBotConfig = validateBigiBotProjectConfig(projectPath);
   const bigiBotConfigError = bigiBotConfig.ok ? null : buildBigiBotConfigError(bigiBotConfig);
+  const hasBigiBotAgent = !bigiBotConfig.missing.some((item) => item.type === "agent");
 
   // --- Dev setup ------------------------------------------------------------
   const { packageManager, devScript, devEntryPoint, lyteBin, nodeBin } = _detectDevSetup(projectPath, pkg);
@@ -371,6 +372,7 @@ function detectProject(projectPath) {
     lyteSignal,
     hasKnowledgeBase,
     knowledgeBaseDir: hasKnowledgeBase ? knowledgeBaseDir : null,
+    hasBigiBotAgent,
     hasBigiBotConfig: bigiBotConfig.ok,
     bigiBotConfigError,
     bigiBotFallbackMode: BIGIBOT_FALLBACK_MODE,
@@ -436,11 +438,6 @@ class ProjectManager {
     if (!detection.supported) {
       bus.emitEvent(EVENTS.PROJECT_ERROR, { error: detection.reason });
       throw new Error(detection.reason);
-    }
-
-    if (!detection.hasBigiBotConfig && !BIGIBOT_FALLBACK_MODE) {
-      bus.emitEvent(EVENTS.PROJECT_ERROR, { error: detection.bigiBotConfigError });
-      throw new Error(detection.bigiBotConfigError);
     }
 
     this.currentProject = {

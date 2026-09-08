@@ -32,8 +32,13 @@ contextBridge.exposeInMainWorld("biginVibe", {
     list: () => ipcRenderer.invoke("terminal:list"),
   },
   chat: {
-    sendMessage: (text) => ipcRenderer.invoke("chat:sendMessage", text),
+    sendMessage: (text, mode) => ipcRenderer.invoke("chat:sendMessage", text, mode),
     cancel: () => ipcRenderer.invoke("chat:cancel"),
+    model: () => ipcRenderer.invoke("chat:model"),
+    cavemanStatus: () => ipcRenderer.invoke("chat:cavemanStatus"),
+  },
+  preview: {
+    instances: () => ipcRenderer.invoke("preview:instances"),
   },
   git: {
     status: () => ipcRenderer.invoke("git:status"),
