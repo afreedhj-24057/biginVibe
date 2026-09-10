@@ -63,7 +63,7 @@ class BigiBotService {
   constructor() {
     this.opencode = new OpenCodeService();
     this.knowledgeByProject = new Map(); // projectPath -> ComponentKnowledgeService
-    this.primedProjects = new Set();
+    this.primedSessions = new Set();
   }
 
   _knowledgeFor(project) {
@@ -93,12 +93,24 @@ class BigiBotService {
   async ensureSession(project, options = {}) {
     const mode = this._normalizeMode(options.mode);
     const agent = mode === "bigibot" ? this._resolveAgentForProject(project) : null;
-    let sessionId = this.opencode.getSessionId(project);
+    let sessionId = options.sessionId || this.opencode.getActiveSessionId(project);
+
     if (!sessionId) {
-      const session = await this.opencode.createSession(project);
+      const sessions = await this.opencode.listSessions(project);
+      sessionId = sessions[0]?.id || null;
+      if (sessionId) {
+        this.opencode.setActiveSessionId(project, sessionId);
+      }
+    }
+
+    if (!sessionId) {
+      const session = await this.opencode.createSessionWithOptions(project, {
+        title: options.title,
+      });
       sessionId = session.id;
     }
-    if (mode === "bigibot" && !this.primedProjects.has(project.path)) {
+
+    if (mode === "bigibot" && !this.primedSessions.has(sessionId)) {
       // noReply priming: gives the model its Bigin-specific instructions as
       // context without triggering a visible assistant turn.
       // Access the SDK client through the OpenCodeService's public opencode property.
@@ -111,9 +123,52 @@ class BigiBotService {
         if (agent) body.agent = agent;
         await client.session.prompt({ path: { id: sessionId }, body });
       }
-      this.primedProjects.add(project.path);
+      this.primedSessions.add(sessionId);
     }
+
+    this.opencode.setActiveSessionId(project, sessionId);
     return sessionId;
+  }
+
+  async listSessions(project) {
+    return this.opencode.listSessions(project);
+  }
+
+  async openSession(project, sessionId) {
+    const session = await this.opencode.getSession(project, sessionId);
+    this.opencode.setActiveSessionId(project, session.id);
+    return session;
+  }
+
+  async getSessionMessages(project, sessionId, options = {}) {
+    return this.opencode.getSessionMessages(project, sessionId, options);
+  }
+
+  async createSession(project, options = {}) {
+    const mode = this._normalizeMode(options.mode);
+    if (mode === "bigibot") this._assertBigiBotModeAllowed(project);
+    const session = await this.opencode.createSessionWithOptions(project, {
+      title: options.title,
+      parentID: options.parentID,
+    });
+    this.opencode.setActiveSessionId(project, session.id);
+    if (mode === "bigibot") {
+      await this.ensureSession(project, { mode, sessionId: session.id });
+    }
+    return session;
+  }
+
+  async renameSession(project, sessionId, title) {
+    return this.opencode.renameSession(project, sessionId, title);
+  }
+
+  async forkSession(project, sessionId) {
+    const forked = await this.opencode.forkSession(project, sessionId);
+    return forked;
+  }
+
+  async deleteSession(project, sessionId) {
+    await this.opencode.deleteSession(project, sessionId);
   }
 
   _normalizeMode(mode) {
@@ -145,11 +200,16 @@ class BigiBotService {
   }
 
   async sendRequest(project, userRequest, options = {}) {
+
     const mode = this._normalizeMode(options.mode);
     if (mode === "bigibot") this._assertBigiBotModeAllowed(project);
 
     const agent = mode === "bigibot" ? this._resolveAgentForProject(project) : null;
-    const sessionId = await this.ensureSession(project, { mode });
+    const sessionId = await this.ensureSession(project, {
+      mode,
+      sessionId: options.sessionId,
+      title: options.title,
+    });
     const context = mode === "bigibot"
       ? this._knowledgeFor(project).buildContextForRequest(userRequest)
       : null;
@@ -169,7 +229,7 @@ class BigiBotService {
   }
 
   async cancel(project) {
-    const sessionId = this.opencode.getSessionId(project);
+    const sessionId = this.opencode.getActiveSessionId(project);
     if (sessionId) await this.opencode.cancelSession(sessionId);
   }
 
@@ -179,7 +239,7 @@ class BigiBotService {
     // (or a reopen of the same project) always receives the Bigin system
     // primer. Without this, the primer is skipped for any project that was
     // previously primed in the same app session.
-    this.primedProjects.clear();
+    this.primedSessions.clear();
   }
 
   async getCavemanStatus() {

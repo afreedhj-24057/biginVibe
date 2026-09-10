@@ -9,7 +9,17 @@ const {
 } = require("../bigibot/BigiBotProjectConfig");
 const { BIGIBOT_FALLBACK_MODE } = require("../../shared/opencodeConfig");
 
-const RECENTS_FILE = path.join(os.homedir(), ".bigin-vibe", "recent-projects.json");
+function resolveRecentsFilePath() {
+  try {
+    const { app } = require("electron");
+    if (app && typeof app.getPath === "function") {
+      return path.join(app.getPath("userData"), "recent-projects.json");
+    }
+  } catch {
+    // Fallback used in non-Electron contexts.
+  }
+  return path.join(os.homedir(), ".bigin-vibe", "recent-projects.json");
+}
 
 // ---------------------------------------------------------------------------
 // Lyte / Bigin project detection
@@ -299,26 +309,15 @@ function _detectDevSetup(projectPath, pkg) {
  */
 function detectProject(projectPath) {
   // --- Determine project name -----------------------------------------------
-  // Prefer package.json name → bower.json name → directory basename.
+  // Use the opened folder name as the canonical project name.
   let pkg = null;
   const pkgPath = path.join(projectPath, "package.json");
   if (fs.existsSync(pkgPath)) {
     try { pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")); } catch { /* ignore */ }
   }
 
-  let bowerName = null;
   const bowerPath = path.join(projectPath, "bower.json");
-  if (fs.existsSync(bowerPath)) {
-    try {
-      const bower = JSON.parse(fs.readFileSync(bowerPath, "utf8"));
-      bowerName = bower.name || null;
-    } catch { /* ignore */ }
-  }
-
-  // Use package.json name, but prefer the directory basename for BiginClient-
-  // style projects where package.json name is empty ("name": "").
-  const rawPkgName = pkg?.name?.trim() || "";
-  const name = rawPkgName || bowerName || path.basename(projectPath);
+  const name = path.basename(projectPath);
 
   // --- Require at least one of: package.json or bower.json ------------------
   // A plain directory with neither is almost certainly not a web project.
@@ -400,24 +399,75 @@ class ProjectManager {
     this._ensureRecentsFile();
   }
 
+  _recentsFilePath() {
+    return resolveRecentsFilePath();
+  }
+
   _ensureRecentsFile() {
-    const dir = path.dirname(RECENTS_FILE);
+    const filePath = this._recentsFilePath();
+    const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    if (!fs.existsSync(RECENTS_FILE)) fs.writeFileSync(RECENTS_FILE, JSON.stringify([]));
+    if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, JSON.stringify([]));
+  }
+
+  _writeRecents(list) {
+    fs.writeFileSync(this._recentsFilePath(), JSON.stringify(list, null, 2));
+  }
+
+  _normalizeRecentEntry(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    const projectPath = typeof entry.path === "string" ? entry.path : "";
+    if (!projectPath) return null;
+
+    const projectName = path.basename(projectPath);
+
+    const lastOpenedAt = (() => {
+      if (typeof entry.lastOpenedAt === "string" && entry.lastOpenedAt.trim()) {
+        return entry.lastOpenedAt;
+      }
+      if (typeof entry.openedAt === "number" && Number.isFinite(entry.openedAt)) {
+        return new Date(entry.openedAt).toISOString();
+      }
+      return new Date().toISOString();
+    })();
+
+    return {
+      path: projectPath,
+      name: projectName,
+      lastOpenedAt,
+    };
   }
 
   getRecentProjects() {
+    this._ensureRecentsFile();
+    const filePath = this._recentsFilePath();
     try {
-      return JSON.parse(fs.readFileSync(RECENTS_FILE, "utf8"));
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const list = Array.isArray(parsed) ? parsed : [];
+      const normalized = list
+        .map((entry) => this._normalizeRecentEntry(entry))
+        .filter((entry) => entry && fs.existsSync(entry.path));
+
+      normalized.sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime());
+      this._writeRecents(normalized);
+      return normalized;
     } catch {
       return [];
     }
   }
 
-  _addToRecents(projectPath) {
+  _addToRecents(project) {
+    const projectPath = project?.path;
+    if (!projectPath) return;
+
+    const projectName = path.basename(projectPath);
     const recents = this.getRecentProjects().filter((p) => p.path !== projectPath);
-    recents.unshift({ path: projectPath, openedAt: Date.now() });
-    fs.writeFileSync(RECENTS_FILE, JSON.stringify(recents.slice(0, 10), null, 2));
+    recents.unshift({
+      path: projectPath,
+      name: projectName,
+      lastOpenedAt: new Date().toISOString(),
+    });
+    this._writeRecents(recents);
   }
 
   async openProject(projectPath) {
@@ -445,7 +495,7 @@ class ProjectManager {
       ...detection,
     };
 
-    this._addToRecents(projectPath);
+    this._addToRecents(this.currentProject);
     bus.emitEvent(EVENTS.PROJECT_OPENED, this.currentProject);
     return this.currentProject;
   }

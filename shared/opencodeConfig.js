@@ -10,7 +10,7 @@
  * Override via the BIGIBOT_MODEL env var (e.g. in a local .env file loaded
  * by the Electron main process), otherwise falls back to the default below.
  */
-const DEFAULT_MODEL = "github-copilot/gpt-5.3-codex";
+const DEFAULT_MODEL = "github/gpt-5.3-codex";
 const DEFAULT_AGENT = "BigiBot";
 
 function readBool(name, fallback = false) {

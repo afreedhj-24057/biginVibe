@@ -1,6 +1,8 @@
 const { spawn } = require("child_process");
+const fs = require("fs");
 const http = require("http");
 const https = require("https");
+const path = require("path");
 const { EVENTS } = require("../../shared/events");
 const {
   BIGIBOT_MODEL,
@@ -364,6 +366,98 @@ function extractTextFromMessage(message) {
   return "";
 }
 
+function normalizeProjectPath(projectPath) {
+  if (!projectPath || typeof projectPath !== "string") return "";
+  const resolved = path.resolve(projectPath);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    try {
+      return fs.realpathSync(resolved);
+    } catch {
+      return resolved;
+    }
+  }
+}
+
+function sessionBelongsToProject(session, projectPath) {
+  if (!session || typeof session !== "object") return false;
+  const normalizedProjectPath = normalizeProjectPath(projectPath);
+  const normalizedSessionDir = normalizeProjectPath(session.directory);
+  if (!normalizedProjectPath || !normalizedSessionDir) return false;
+  return normalizedProjectPath === normalizedSessionDir;
+}
+
+function normalizeSessionSummary(session) {
+  return {
+    id: session.id,
+    title: session.title || "New chat",
+    projectId: session.projectID || null,
+    directory: session.directory || "",
+    parentId: session.parentID || null,
+    createdAt: Number(session.time?.created || 0),
+    updatedAt: Number(session.time?.updated || 0),
+  };
+}
+
+function sanitizeUserPromptText(rawText) {
+  if (typeof rawText !== "string") return "";
+  const trimmed = rawText.trim();
+  if (!trimmed) return "";
+  if (/^You are BigiBot, the coding agent for the Bigin frontend team\./.test(trimmed)) {
+    return "";
+  }
+  if (!trimmed.startsWith("ACTIVE PROJECT:")) return trimmed;
+
+  const firstDivider = trimmed.indexOf("\n\n---\n\n");
+  if (firstDivider === -1) return trimmed;
+  const afterHeader = trimmed.slice(firstDivider + "\n\n---\n\n".length);
+  const contextDivider = "\n\n---\nRelevant Bigin/Lyte reference material";
+  const contextIdx = afterHeader.indexOf(contextDivider);
+  if (contextIdx === -1) return afterHeader.trim();
+  return afterHeader.slice(0, contextIdx).trim();
+}
+
+function normalizeSessionMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+
+  const normalized = [];
+  for (const item of messages) {
+    const info = item?.info;
+    if (!info || (info.role !== "user" && info.role !== "assistant")) continue;
+
+    const text = extractTextFromParts(item?.parts, info.role === "assistant" ? info.id : null);
+    if (!text) continue;
+
+    if (info.role === "user") {
+      const normalizedText = sanitizeUserPromptText(text);
+      if (!normalizedText) continue;
+      normalized.push({
+        role: "user",
+        text: normalizedText,
+        opencodeMessageId: info.id,
+        createdAt: Number(info.time?.created || 0),
+      });
+      continue;
+    }
+
+    const model = info.providerID && info.modelID
+      ? `${info.providerID}/${info.modelID}`
+      : null;
+
+    normalized.push({
+      role: "assistant",
+      text,
+      opencodeMessageId: info.id,
+      model,
+      agentMode: info.mode || "build",
+      createdAt: Number(info.time?.created || 0),
+    });
+  }
+
+  return normalized;
+}
+
 function extractTextFromMessageUpdatedProperties(properties) {
   if (!properties || typeof properties !== "object") return "";
 
@@ -605,7 +699,7 @@ class OpenCodeService {
     /** @type {{ client: any, server: { url: string, proc: ChildProcess, close(): void } } | null} */
     this.opencode = null;
     this.project = null;
-    this.sessionsByProject = new Map(); // projectPath -> sessionId
+    this.sessionsByProject = new Map(); // projectPath -> active sessionId
     this.activePromptBySession = new Map(); // sessionId -> { assistantMessageId }
     this.messageRoleBySession = new Map(); // sessionId -> Map<messageId, role>
     this.cancelRequestedBySession = new Set();
@@ -689,12 +783,23 @@ class OpenCodeService {
   }
 
   async createSession(project) {
+    return this.createSessionWithOptions(project, {});
+  }
+
+  async createSessionWithOptions(project, options = {}) {
     await this._ensureServerForProject(project);
     const { client } = this.opencode;
+    const title = typeof options.title === "string" && options.title.trim()
+      ? options.title.trim()
+      : "New chat";
+    const body = { title };
+    if (typeof options.parentID === "string" && options.parentID.trim()) {
+      body.parentID = options.parentID.trim();
+    }
     const session = await client.session.create({
-      body: { title: `BiginVibe – ${project.name}` },
+      body,
+      query: { directory: project.path },
     });
-    debugger;
     this.sessionsByProject.set(project.path, session.data.id);
     bus.emitEvent(EVENTS.AGENT_SESSION_CREATED, {
       sessionId: session.data.id,
@@ -705,6 +810,113 @@ class OpenCodeService {
 
   getSessionId(project) {
     return this.sessionsByProject.get(project.path) || null;
+  }
+
+  getActiveSessionId(project) {
+    return this.getSessionId(project);
+  }
+
+  setActiveSessionId(project, sessionId) {
+    if (!project?.path) return;
+    if (!sessionId) {
+      this.sessionsByProject.delete(project.path);
+      return;
+    }
+    this.sessionsByProject.set(project.path, sessionId);
+  }
+
+  async listSessions(project) {
+    await this._ensureServerForProject(project);
+    const { client } = this.opencode;
+    const res = await client.session.list({ query: { directory: project.path } });
+    const sessions = Array.isArray(res?.data) ? res.data : [];
+    return sessions
+      .filter((session) => sessionBelongsToProject(session, project.path))
+      .map(normalizeSessionSummary)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async getSession(project, sessionId) {
+    await this._ensureServerForProject(project);
+    const { client } = this.opencode;
+    try {
+      const res = await client.session.get({
+        path: { id: sessionId },
+        query: { directory: project.path },
+      });
+      const session = res?.data;
+      if (!sessionBelongsToProject(session, project.path)) {
+        const err = new Error("Session does not belong to the active project.");
+        err.code = "SESSION_PROJECT_MISMATCH";
+        throw err;
+      }
+      return normalizeSessionSummary(session);
+    } catch (err) {
+      const listed = await this.listSessions(project);
+      const found = listed.find((session) => session.id === sessionId);
+      if (found) return found;
+      throw err;
+    }
+  }
+
+  async getSessionMessages(project, sessionId, options = {}) {
+    await this._ensureServerForProject(project);
+    const sessions = await this.listSessions(project);
+    if (!sessions.some((session) => session.id === sessionId)) {
+      const err = new Error("Session does not belong to the active project.");
+      err.code = "SESSION_PROJECT_MISMATCH";
+      throw err;
+    }
+    await this._ensureServerForProject(project);
+    const { client } = this.opencode;
+    const res = await client.session.messages({
+      path: { id: sessionId },
+      query: {
+        directory: project.path,
+        ...(Number.isFinite(options.limit) ? { limit: options.limit } : {}),
+      },
+    });
+    const messages = Array.isArray(res?.data) ? res.data : [];
+    return normalizeSessionMessages(messages);
+  }
+
+  async renameSession(project, sessionId, title) {
+    await this._ensureServerForProject(project);
+    const { client } = this.opencode;
+    const nextTitle = typeof title === "string" ? title.trim() : "";
+    if (!nextTitle) throw new Error("Session title cannot be empty.");
+
+    const res = await client.session.update({
+      path: { id: sessionId },
+      body: { title: nextTitle },
+      query: { directory: project.path },
+    });
+    return normalizeSessionSummary(res?.data || {});
+  }
+
+  async forkSession(project, sessionId) {
+    await this._ensureServerForProject(project);
+    const { client } = this.opencode;
+    const res = await client.session.fork({
+      path: { id: sessionId },
+      query: { directory: project.path },
+    });
+    const forked = normalizeSessionSummary(res?.data || {});
+    this.setActiveSessionId(project, forked.id);
+    return forked;
+  }
+
+  async deleteSession(project, sessionId) {
+    await this._ensureServerForProject(project);
+    const { client } = this.opencode;
+    await client.session.delete({
+      path: { id: sessionId },
+      query: { directory: project.path },
+    });
+    if (this.getSessionId(project) === sessionId) {
+      this.setActiveSessionId(project, null);
+    }
+    return true;
   }
 
   /**
@@ -731,7 +943,10 @@ class OpenCodeService {
     });
     try {
       const body = {
-        // model: BIGIBOT_MODEL,
+        model: {
+          providerID: "github",      // ← Provider ID
+          modelID: "gpt-5.3-codex"  // ← Model ID
+        },
         parts: [{ type: "text", text }],
       };
       if (typeof options.agent === "string" && options.agent.trim()) {

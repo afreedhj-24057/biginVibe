@@ -7,15 +7,42 @@ import ChatPanel from "../components/Chat/ChatPanel";
 import ChangesPanel from "../components/Changes/ChangesPanel";
 import PreviewPanel from "../components/Preview/PreviewPanel";
 import TerminalPanel from "../components/Terminal/TerminalPanel";
+import WelcomeScreen from "../components/Welcome/WelcomeScreen";
 
 const SIDEBAR_MIN_WIDTH = 300;
 const SIDEBAR_MAX_WIDTH = 500;
 const SIDEBAR_DEFAULT_WIDTH = 400;
 
+function deriveSessionTitle(prompt) {
+  if (!prompt || typeof prompt !== "string") return "New chat";
+  const cleaned = prompt
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^requirements?\s*:/i.test(line))
+    .filter((line) => !/^[-*]\s+/.test(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) return "New chat";
+  const sentence = cleaned.split(/[.!?]/)[0].trim() || cleaned;
+  const compact = sentence
+    .replace(/^please\s+/i, "")
+    .replace(/^implement\s+/i, "")
+    .replace(/^add\s+/i, "")
+    .replace(/^create\s+/i, "")
+    .trim();
+  const title = compact.length > 56 ? `${compact.slice(0, 56).trimEnd()}...` : compact;
+  return title || "New chat";
+}
+
 export default function Page() {
   const [project, setProject] = useState(null);
   const [envStatus, setEnvStatus] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(null);
   const [activeModel, setActiveModel] = useState(null);
   const [cavemanStatus, setCavemanStatus] = useState(null);
   const [selectedAgentMode, setSelectedAgentMode] = useState("build");
@@ -28,6 +55,9 @@ export default function Page() {
   const [agentActivities, setAgentActivities] = useState([]);
   const [agentActivityExpanded, setAgentActivityExpanded] = useState(false);
   const [changesRefreshToken, setChangesRefreshToken] = useState(0);
+  const [recentProjects, setRecentProjects] = useState([]);
+  const [welcomeBusy, setWelcomeBusy] = useState(false);
+  const [welcomeError, setWelcomeError] = useState(null);
   // Bumped whenever the dev server (re)starts and establishes a fresh
   // initial preview URL. PreviewPanel resets its address bar to the new
   // previewUrl only when this changes — never on every render — so a
@@ -40,6 +70,7 @@ export default function Page() {
     // workspace:current returns { project, devServer, previewUrl, ... }.
     bridge.workspace.current().then((ws) => {
       if (ws?.project) setProject(ws.project);
+      if (ws?.opencodeSessionId) setActiveSessionId(ws.opencodeSessionId);
       if (ws?.project) {
         setSelectedAgentMode(ws.project.hasBigiBotAgent ? "bigibot" : "build");
       }
@@ -53,7 +84,52 @@ export default function Page() {
     Promise.resolve(bridge.chat.cavemanStatus?.()).then((status) => {
       if (status) setCavemanStatus(status);
     }).catch(() => {});
+    Promise.resolve(bridge.project.recents?.()).then((recents) => {
+      setRecentProjects(Array.isArray(recents) ? recents : []);
+    }).catch(() => {
+      setRecentProjects([]);
+    });
   }, []);
+
+  const refreshRecents = useCallback(() => {
+    Promise.resolve(bridge.project.recents?.()).then((recents) => {
+      setRecentProjects(Array.isArray(recents) ? recents : []);
+    }).catch(() => {
+      setRecentProjects([]);
+    });
+  }, []);
+
+  const handleWelcomeOpenProject = useCallback(async () => {
+    setWelcomeError(null);
+    setWelcomeBusy(true);
+    try {
+      const dir = await bridge.project.pickDirectory();
+      if (!dir) return;
+      const opened = await bridge.project.open(dir);
+      setProject(opened || null);
+      refreshRecents();
+    } catch (err) {
+      setWelcomeError(err?.message || String(err));
+    } finally {
+      setWelcomeBusy(false);
+    }
+  }, [refreshRecents]);
+
+  const handleWelcomeOpenRecent = useCallback(async (recent) => {
+    if (!recent?.path) return;
+    setWelcomeError(null);
+    setWelcomeBusy(true);
+    try {
+      const opened = await bridge.project.open(recent.path);
+      setProject(opened || null);
+      refreshRecents();
+    } catch (err) {
+      setWelcomeError(err?.message || String(err));
+      refreshRecents();
+    } finally {
+      setWelcomeBusy(false);
+    }
+  }, [refreshRecents]);
 
   const refreshCavemanStatus = useCallback(() => {
     Promise.resolve(bridge.chat.cavemanStatus?.()).then((status) => {
@@ -70,6 +146,156 @@ export default function Page() {
   const addMessage = useCallback((msg) => {
     setMessages((prev) => [...prev, msg]);
   }, []);
+
+  const sortSessions = useCallback((list) => {
+    return [...list].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  }, []);
+
+  const refreshSessions = useCallback(async (opts = {}) => {
+    const listed = await bridge.chat.listSessions();
+    const next = sortSessions(Array.isArray(listed) ? listed : []);
+    setSessions(next);
+
+    const preferred = opts.preferredSessionId;
+    const current = opts.currentSessionId;
+    const fallback = preferred || current || null;
+    if (fallback && next.some((s) => s.id === fallback)) {
+      setActiveSessionId(fallback);
+      return { sessions: next, active: fallback };
+    }
+
+    if (!next.length) {
+      setActiveSessionId(null);
+      setMessages([]);
+    }
+
+    return { sessions: next, active: null };
+  }, [sortSessions]);
+
+  const loadSessionMessages = useCallback(async (sessionId) => {
+    if (!sessionId) {
+      setMessages([]);
+      return;
+    }
+    const loaded = await bridge.chat.sessionMessages(sessionId);
+    setMessages(Array.isArray(loaded) ? loaded : []);
+  }, []);
+
+  const openSession = useCallback(async (sessionId) => {
+    if (!sessionId) return;
+    const previousSessionId = activeSessionId;
+    try {
+      const session = await bridge.chat.openSession(sessionId);
+      setActiveSessionId(session.id);
+      await loadSessionMessages(session.id);
+      await refreshSessions({ preferredSessionId: session.id });
+      setAgentWorking(false);
+      setAgentActivities([]);
+      setAgentActivityExpanded(false);
+    } catch (err) {
+      addMessage({ role: "error", text: err?.message || String(err) });
+      await refreshSessions();
+      setActiveSessionId(previousSessionId || null);
+    }
+  }, [activeSessionId, loadSessionMessages, refreshSessions, addMessage]);
+
+  const createNewSession = useCallback(async ({ title } = {}) => {
+    const payload = {
+      mode: selectedAgentMode,
+      ...(title ? { title } : {}),
+    };
+    const createSession = bridge.chat.newSession;
+    if (typeof createSession !== "function") {
+      const err = new Error("Chat session controls are unavailable. Restart BiginVibe to load the latest chat bridge.");
+      addMessage({ role: "error", text: err.message });
+      throw err;
+    }
+    const created = await bridge.chat.newSession(payload);
+    if (!created?.id) {
+      const err = new Error("Could not create a new chat session. Restart BiginVibe and try again.");
+      addMessage({ role: "error", text: err.message });
+      throw err;
+    }
+    setActiveSessionId(created.id);
+    setMessages([]);
+    setAgentWorking(false);
+    setAgentActivities([]);
+    setAgentActivityExpanded(false);
+    await refreshSessions({ preferredSessionId: created.id });
+    return created;
+  }, [selectedAgentMode, refreshSessions, addMessage]);
+
+  const sendPrompt = useCallback(async (value) => {
+    if (!project) {
+      addMessage({
+        role: "error",
+        text: "No project is currently open.\n\nOpen a project before asking the agent to modify code.",
+      });
+      return;
+    }
+
+    const text = value.trim();
+    if (!text) return;
+
+    let targetSessionId = activeSessionId;
+    let sessionTitle = "";
+
+    if (!targetSessionId) {
+      const created = await createNewSession({ title: deriveSessionTitle(text) });
+      targetSessionId = created.id;
+    }
+
+    const activeSession = sessions.find((s) => s.id === targetSessionId);
+    if (activeSession && (!activeSession.title || /^new chat$/i.test(activeSession.title))) {
+      sessionTitle = deriveSessionTitle(text);
+      try {
+        await bridge.chat.renameSession(targetSessionId, sessionTitle);
+      } catch {}
+    }
+
+    addMessage({ role: "user", text });
+    try {
+      await bridge.chat.sendMessage({
+        text,
+        mode: selectedAgentMode,
+        sessionId: targetSessionId,
+        ...(sessionTitle ? { sessionTitle } : {}),
+      });
+      await refreshSessions({ preferredSessionId: targetSessionId });
+    } catch (err) {
+      addMessage({ role: "error", text: err?.message || String(err) });
+      throw err;
+    }
+  }, [project, activeSessionId, selectedAgentMode, sessions, createNewSession, addMessage, refreshSessions]);
+
+  const renameSession = useCallback(async (sessionId, title) => {
+    await bridge.chat.renameSession(sessionId, title);
+    await refreshSessions({ preferredSessionId: sessionId });
+  }, [refreshSessions]);
+
+  const forkSession = useCallback(async (sessionId) => {
+    const forked = await bridge.chat.forkSession(sessionId);
+    await refreshSessions({ preferredSessionId: forked?.id });
+    if (forked?.id) await openSession(forked.id);
+  }, [refreshSessions, openSession]);
+
+  const deleteSession = useCallback(async (sessionId) => {
+    await bridge.chat.deleteSession(sessionId);
+    const result = await refreshSessions({ currentSessionId: activeSessionId });
+    if (!result.sessions.length) {
+      setMessages([]);
+      return;
+    }
+    const nextActive = result.active || result.sessions[0]?.id;
+    if (nextActive) await openSession(nextActive);
+  }, [refreshSessions, activeSessionId, openSession]);
+
+  const isActiveSessionEvent = useCallback((payload) => {
+    const sid = payload?.sessionId;
+    if (!sid) return true;
+    if (!activeSessionId) return false;
+    return sid === activeSessionId;
+  }, [activeSessionId]);
 
   const startSidebarResize = useCallback((e) => {
     if (sidebarCollapsed) return;
@@ -169,6 +395,8 @@ export default function Page() {
         // Full workspace snapshot — update project + reset chat.
         setProject(evt.payload.project);
         setMessages([]);
+        setSessions([]);
+        setActiveSessionId(evt.payload.opencodeSessionId || null);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
         setSelectedAgentMode(evt.payload.project?.hasBigiBotAgent ? "bigibot" : "build");
@@ -179,16 +407,20 @@ export default function Page() {
           setEnvStatus(null);
         }
         refreshCavemanStatus();
+        refreshRecents();
         break;
       case "workspace.closed":
         setProject(null);
         setEnvStatus(null);
         setMessages([]);
+        setSessions([]);
+        setActiveSessionId(null);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
         setSelectedAgentMode("build");
         setAgentWorking(false);
         refreshCavemanStatus();
+        refreshRecents();
         break;
 
       // -----------------------------------------------------------------------
@@ -197,21 +429,27 @@ export default function Page() {
       case "project.opened":
         setProject(evt.payload);
         setMessages([]);
+        setSessions([]);
+        setActiveSessionId(null);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
         setSelectedAgentMode(evt.payload?.hasBigiBotAgent ? "bigibot" : "build");
         setAgentWorking(false);
         refreshCavemanStatus();
+        refreshRecents();
         break;
       case "project.closed":
         setProject(null);
         setEnvStatus(null);
         setMessages([]);
+        setSessions([]);
+        setActiveSessionId(null);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
         setSelectedAgentMode("build");
         setAgentWorking(false);
         refreshCavemanStatus();
+        refreshRecents();
         break;
       case "project.error":
         addMessage({ role: "error", text: evt.payload.error });
@@ -236,11 +474,13 @@ export default function Page() {
         break;
 
       case "agent.thinking":
+        if (!isActiveSessionEvent(evt.payload)) break;
         setAgentWorking(true);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
         break;
       case "agent.activity":
+        if (!isActiveSessionEvent(evt.payload)) break;
         applyAgentActivity(evt.payload);
         break;
       case "agent.tool.started":
@@ -251,16 +491,20 @@ export default function Page() {
         setChangesRefreshToken((t) => t + 1);
         break;
       case "agent.message":
+        if (!isActiveSessionEvent(evt.payload)) break;
         setAgentWorking(false);
         applyAssistantMessage(evt.payload);
         break;
       case "agent.completed":
+        if (!isActiveSessionEvent(evt.payload)) break;
         setAgentWorking(false);
         setAgentActivityExpanded(false);
         setChangesRefreshToken((t) => t + 1);
         refreshCavemanStatus();
+        refreshSessions({ currentSessionId: activeSessionId }).catch(() => {});
         break;
       case "agent.error":
+        if (!isActiveSessionEvent(evt.payload)) break;
         setAgentWorking(false);
         setAgentActivityExpanded(false);
         addMessage({ role: "error", text: evt.payload.error });
@@ -270,7 +514,51 @@ export default function Page() {
       default:
         break;
     }
-  }, [addMessage, applyAssistantMessage, applyAgentActivity, refreshCavemanStatus]);
+  }, [
+    addMessage,
+    applyAssistantMessage,
+    applyAgentActivity,
+    refreshCavemanStatus,
+    refreshRecents,
+    refreshSessions,
+    openSession,
+    activeSessionId,
+    isActiveSessionEvent,
+  ]);
+
+  useEffect(() => {
+    if (!project?.path) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        await refreshSessions({ currentSessionId: activeSessionId });
+        if (cancelled) return;
+      } catch (err) {
+        if (!cancelled) {
+          addMessage({ role: "error", text: err?.message || String(err) });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.path]);
+
+  if (!project) {
+    return (
+      <div className="app-shell">
+        <WelcomeScreen
+          recents={recentProjects}
+          busy={welcomeBusy}
+          error={welcomeError}
+          onOpenProject={handleWelcomeOpenProject}
+          onOpenRecent={handleWelcomeOpenRecent}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -329,9 +617,17 @@ export default function Page() {
             {sidebarTab === "chat" ? (
                 <ChatPanel
                   project={project}
+                  sessions={sessions}
+                  activeSessionId={activeSessionId}
+                  onOpenSession={openSession}
+                  onNewSession={createNewSession}
+                  onRenameSession={renameSession}
+                  onForkSession={forkSession}
+                  onDeleteSession={deleteSession}
                   messages={messages}
-                  onSend={addMessage}
+                  onSend={sendPrompt}
                   agentWorking={agentWorking}
+                  activeModel={activeModel}
                   cavemanStatus={cavemanStatus}
                   activityEntries={agentActivities}
                   activityExpanded={agentActivityExpanded}

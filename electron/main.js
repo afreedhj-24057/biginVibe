@@ -288,18 +288,94 @@ ipcMain.handle("terminal:list", () => terminalManager.listSessions());
 // .path (see OpenCodeService._ensureServerForProject). The renderer cannot
 // influence the working directory — it only sends the natural-language text.
 // ---------------------------------------------------------------------------
-ipcMain.handle("chat:sendMessage", async (_evt, text, mode = "build") => {
+ipcMain.handle("chat:listSessions", async () => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) return [];
+  return bigiBot.listSessions(project);
+});
+ipcMain.handle("chat:newSession", async (_evt, payload = {}) => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) throw new Error("No project is open.");
+
+  const mode = payload?.mode === "bigibot" && project.hasBigiBotAgent ? "bigibot" : "build";
+  const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+  const parentID = typeof payload?.parentID === "string" ? payload.parentID.trim() : "";
+
+  const session = await bigiBot.createSession(project, {
+    mode,
+    ...(title ? { title } : {}),
+    ...(parentID ? { parentID } : {}),
+  });
+  workspaceManager.setOpenCodeSessionId(session.id);
+  return session;
+});
+ipcMain.handle("chat:openSession", async (_evt, sessionId) => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) throw new Error("No project is open.");
+  if (!sessionId || typeof sessionId !== "string") throw new Error("sessionId is required.");
+
+  const session = await bigiBot.openSession(project, sessionId);
+  workspaceManager.setOpenCodeSessionId(session.id);
+  return session;
+});
+ipcMain.handle("chat:sessionMessages", async (_evt, sessionId) => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) throw new Error("No project is open.");
+  if (!sessionId || typeof sessionId !== "string") throw new Error("sessionId is required.");
+  return bigiBot.getSessionMessages(project, sessionId);
+});
+ipcMain.handle("chat:renameSession", async (_evt, sessionId, title) => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) throw new Error("No project is open.");
+  if (!sessionId || typeof sessionId !== "string") throw new Error("sessionId is required.");
+  return bigiBot.renameSession(project, sessionId, title);
+});
+ipcMain.handle("chat:forkSession", async (_evt, sessionId) => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) throw new Error("No project is open.");
+  if (!sessionId || typeof sessionId !== "string") throw new Error("sessionId is required.");
+  const forked = await bigiBot.forkSession(project, sessionId);
+  workspaceManager.setOpenCodeSessionId(forked.id);
+  return forked;
+});
+ipcMain.handle("chat:deleteSession", async (_evt, sessionId) => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) throw new Error("No project is open.");
+  if (!sessionId || typeof sessionId !== "string") throw new Error("sessionId is required.");
+  await bigiBot.deleteSession(project, sessionId);
+
+  const active = bigiBot.opencode.getActiveSessionId(project);
+  workspaceManager.setOpenCodeSessionId(active || null);
+  return true;
+});
+ipcMain.handle("chat:sendMessage", async (_evt, payload, maybeMode) => {
   const project = workspaceManager.getActiveProject();
   if (!project) {
     throw new Error(
       "No project is currently open.\n\nOpen a project before asking the agent to modify code."
     );
   }
-  const effectiveMode = mode === "bigibot" && project.hasBigiBotAgent ? "bigibot" : "build";
-  const result = await bigiBot.sendRequest(project, text, { mode: effectiveMode });
-  // Update the workspace snapshot with the live session id so workspace:current
-  // always reflects the currently active OpenCode session.
-  const sessionId = bigiBot.opencode.getSessionId(project);
+
+  const isLegacy = typeof payload === "string";
+  const text = isLegacy ? payload : String(payload?.text || "");
+  if (!text.trim()) throw new Error("Message text cannot be empty.");
+
+  const requestedMode = isLegacy ? maybeMode : payload?.mode;
+  const effectiveMode = requestedMode === "bigibot" && project.hasBigiBotAgent ? "bigibot" : "build";
+
+  const requestedSessionId = isLegacy ? null : payload?.sessionId;
+  if (typeof requestedSessionId === "string" && requestedSessionId.trim()) {
+    await bigiBot.openSession(project, requestedSessionId.trim());
+  }
+
+  const requestedTitle = isLegacy ? "" : String(payload?.sessionTitle || "").trim();
+  const result = await bigiBot.sendRequest(project, text, {
+    mode: effectiveMode,
+    ...(requestedSessionId ? { sessionId: requestedSessionId.trim() } : {}),
+    ...(requestedTitle ? { title: requestedTitle } : {}),
+  });
+
+  const sessionId = bigiBot.opencode.getActiveSessionId(project);
   if (sessionId) workspaceManager.setOpenCodeSessionId(sessionId);
   return result;
 });

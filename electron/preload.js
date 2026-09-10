@@ -32,10 +32,17 @@ contextBridge.exposeInMainWorld("biginVibe", {
     list: () => ipcRenderer.invoke("terminal:list"),
   },
   chat: {
-    sendMessage: (text, mode) => ipcRenderer.invoke("chat:sendMessage", text, mode),
+    sendMessage: (payload, mode) => ipcRenderer.invoke("chat:sendMessage", payload, mode),
     cancel: () => ipcRenderer.invoke("chat:cancel"),
     model: () => ipcRenderer.invoke("chat:model"),
     cavemanStatus: () => ipcRenderer.invoke("chat:cavemanStatus"),
+    listSessions: () => ipcRenderer.invoke("chat:listSessions"),
+    newSession: (payload) => ipcRenderer.invoke("chat:newSession", payload),
+    openSession: (sessionId) => ipcRenderer.invoke("chat:openSession", sessionId),
+    sessionMessages: (sessionId) => ipcRenderer.invoke("chat:sessionMessages", sessionId),
+    renameSession: (sessionId, title) => ipcRenderer.invoke("chat:renameSession", sessionId, title),
+    forkSession: (sessionId) => ipcRenderer.invoke("chat:forkSession", sessionId),
+    deleteSession: (sessionId) => ipcRenderer.invoke("chat:deleteSession", sessionId),
   },
   preview: {
     instances: () => ipcRenderer.invoke("preview:instances"),
