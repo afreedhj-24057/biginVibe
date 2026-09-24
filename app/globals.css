@@ -958,6 +958,21 @@ button:disabled {
   background: #2c2e33;
 }
 
+.chat-message-activities {
+  margin: 4px 0 8px;
+  padding-left: 4px;
+  border-left: 2px solid #4a5260;
+}
+
+.chat-message-assistant-activity {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  color: #98c379;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .chat-message-activity {
   color: #98c379;
   font-size: 12px;

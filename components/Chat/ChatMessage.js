@@ -69,7 +69,17 @@ export default function ChatMessage({ message }) {
   return (
     <div className="chat-message chat-message-assistant">
        <div className="chat-message-label">Assistant</div>
-      <MarkdownText text={message.text} />
+       {Array.isArray(message.activities) && message.activities.length > 0 && (
+         <div className="chat-message-activities" aria-label="Assistant activity">
+           {message.activities.map((activity, index) => (
+             <div className="chat-message-assistant-activity" key={`${activity.kind}-${activity.status}-${activity.at}-${index}`}>
+               <span className="activity-icon">{activity.status === "completed" ? "✓" : "•"}</span>
+               <span>{activity.label}</span>
+             </div>
+           ))}
+         </div>
+       )}
+       <MarkdownText text={message.text} />
       <div className="chat-message-meta">
         <button
           className="chat-copy-icon-btn"

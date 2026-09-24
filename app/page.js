@@ -46,6 +46,7 @@ export default function Page() {
   const [sessionListStatus, setSessionListStatus] = useState("idle");
   const [sessionListError, setSessionListError] = useState("");
   const sessionListRequestRef = useRef(0);
+  const currentAssistantMessageId = useRef(null);
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [activeModel, setActiveModel] = useState(null);
@@ -348,6 +349,7 @@ export default function Page() {
   }, [project?.path, sortSessions]);
 
   const loadSessionMessages = useCallback(async (sessionId) => {
+    currentAssistantMessageId.current = null;
     if (!sessionId) {
       setMessages([]);
       return;
@@ -391,6 +393,7 @@ export default function Page() {
       throw err;
     }
     setActiveSessionId(created.id);
+    currentAssistantMessageId.current = null;
     setMessages([]);
     setAgentWorking(false);
     setAgentActivities([]);
@@ -427,7 +430,24 @@ export default function Page() {
       } catch {}
     }
 
-    addMessage({ role: "user", text });
+    const assistantMessageId = `assistant-turn-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    currentAssistantMessageId.current = {
+      id: assistantMessageId,
+      sessionId: targetSessionId,
+    };
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text },
+      {
+        role: "assistant",
+        text: "",
+        localMessageId: assistantMessageId,
+        sessionId: targetSessionId,
+        model: activeModel,
+        agentMode: selectedAgent || null,
+        status: "working",
+      },
+    ]);
     try {
       const selectedModel = parseModelValue(selectedModelValue);
       await bridge.chat.sendMessage({
@@ -452,7 +472,7 @@ export default function Page() {
       });
       throw err;
     }
-  }, [project, activeSessionId, selectedAgent, sessions, createNewSession, refreshSessions, selectedModelValue, parseModelValue]);
+  }, [project, activeSessionId, activeModel, selectedAgent, sessions, createNewSession, refreshSessions, selectedModelValue, parseModelValue]);
 
   const renameSession = useCallback(async (sessionId, title) => {
     await bridge.chat.renameSession(sessionId, title);
@@ -479,6 +499,8 @@ export default function Page() {
   const isActiveSessionEvent = useCallback((payload) => {
     const sid = payload?.sessionId;
     if (!sid) return true;
+    const currentTurn = currentAssistantMessageId.current;
+    if (currentTurn?.sessionId) return sid === currentTurn.sessionId;
     if (!activeSessionId) return false;
     return sid === activeSessionId;
   }, [activeSessionId]);
@@ -523,32 +545,43 @@ export default function Page() {
     const model = payload?.model || null;
     const agentMode = payload?.agentMode || "build";
 
-    setMessages((prev) => {
-      if (!messageId) {
-        return [...prev, { role: "assistant", text, model: model || activeModel, agentMode }];
-      }
+    const currentTurn = currentAssistantMessageId.current;
+    if (!currentTurn) return;
 
+    setMessages((prev) => {
       const idx = prev.findIndex(
-        (m) => m.role === "assistant" && m.opencodeMessageId === messageId
+        (m) => m.role === "assistant" && m.localMessageId === currentTurn.id
       );
 
       if (idx === -1) {
-        return [...prev, {
-          role: "assistant",
-          text,
-          opencodeMessageId: messageId,
-          model: model || activeModel,
-          agentMode,
-        }];
+        return prev;
       }
 
       const next = [...prev];
       const existing = next[idx];
+      const existingText = existing.text || "";
+      let nextText = text;
+      if (kind === "delta") {
+        // Part events are usually deltas, but some SDK versions send a
+        // cumulative snapshot through the same event shape.
+        if (text.startsWith(existingText)) nextText = text;
+        else if (existingText.startsWith(text) || existingText.endsWith(text)) nextText = existingText;
+        else nextText = `${existingText}${text}`;
+      } else if (existingText && existingText !== text) {
+        // message.updated and prompt() can contain cumulative snapshots, while
+        // separate text parts can be independent. Keep both without duplicating
+        // a snapshot already present in the turn.
+        if (text.startsWith(existingText)) nextText = text;
+        else if (existingText.startsWith(text)) nextText = existingText;
+        else nextText = `${existingText}\n\n${text}`;
+      }
       next[idx] = {
         ...existing,
         model: existing.model || model || activeModel,
         agentMode: existing.agentMode || agentMode,
-        text: kind === "delta" ? `${existing.text || ""}${text}` : text,
+        ...(messageId ? { opencodeMessageId: messageId } : {}),
+        text: nextText,
+        status: "streaming",
       };
       return next;
     });
@@ -575,6 +608,26 @@ export default function Page() {
       }
       return [...next, { kind, status, label, at: now }];
     });
+    const currentTurn = currentAssistantMessageId.current;
+    if (currentTurn) {
+      setMessages((prev) => {
+        const idx = prev.findIndex(
+          (message) => message.role === "assistant" && message.localMessageId === currentTurn.id
+        );
+        if (idx === -1) return prev;
+        const next = [...prev];
+        const existing = next[idx];
+        const activities = Array.isArray(existing.activities) ? existing.activities : [];
+        if (activities.some((item) => item.kind === kind && item.status === status && item.label === label)) {
+          return prev;
+        }
+        next[idx] = {
+          ...existing,
+          activities: [...activities.slice(-11), { kind, status, label, at: Date.now() }],
+        };
+        return next;
+      });
+    }
   }, []);
 
   useRuntimeEvents((evt) => {
@@ -704,6 +757,17 @@ export default function Page() {
         setAgentWorking(true);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
+        setMessages((prev) => {
+          const currentTurn = currentAssistantMessageId.current;
+          if (!currentTurn) return prev;
+          const idx = prev.findIndex(
+            (message) => message.role === "assistant" && message.localMessageId === currentTurn.id
+          );
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], status: "thinking" };
+          return next;
+        });
         break;
       case "agent.activity":
         if (!isActiveSessionEvent(evt.payload)) break;
@@ -725,6 +789,18 @@ export default function Page() {
         if (!isActiveSessionEvent(evt.payload)) break;
         setAgentWorking(false);
         setAgentActivityExpanded(false);
+        const completedTurn = currentAssistantMessageId.current;
+        setMessages((prev) => {
+          if (!completedTurn) return prev;
+          const idx = prev.findIndex(
+            (message) => message.role === "assistant" && message.localMessageId === completedTurn.id
+          );
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], status: "completed" };
+          return next;
+        });
+        currentAssistantMessageId.current = null;
         setChangesRefreshToken((t) => t + 1);
         refreshCavemanStatus();
         refreshSessions({ currentSessionId: activeSessionId }).catch(() => {});
