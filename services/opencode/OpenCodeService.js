@@ -5,7 +5,7 @@ const https = require("https");
 const path = require("path");
 const { EVENTS } = require("../../shared/events");
 const {
-  BIGIBOT_MODEL,
+  USE_CAVEMAN_PROXY,
   BIGIBOT_CAVEMAN_ENABLED,
   BIGIBOT_CAVEMAN_AUTOSTART,
   BIGIBOT_CAVEMAN_URL,
@@ -380,12 +380,23 @@ function normalizeProjectPath(projectPath) {
   }
 }
 
+function toComparablePath(projectPath) {
+  const normalized = normalizeProjectPath(projectPath);
+  if (!normalized) return "";
+  const trimmed = normalized.replace(/[\\/]+$/, "");
+  const platform = process.platform;
+  if (platform === "win32" || platform === "darwin") {
+    return trimmed.toLowerCase();
+  }
+  return trimmed;
+}
+
 function sessionBelongsToProject(session, projectPath) {
   if (!session || typeof session !== "object") return false;
-  const normalizedProjectPath = normalizeProjectPath(projectPath);
-  const normalizedSessionDir = normalizeProjectPath(session.directory);
-  if (!normalizedProjectPath || !normalizedSessionDir) return false;
-  return normalizedProjectPath === normalizedSessionDir;
+  const projectComparable = toComparablePath(projectPath);
+  const sessionComparable = toComparablePath(session.directory);
+  if (!projectComparable || !sessionComparable) return false;
+  return projectComparable === sessionComparable;
 }
 
 function normalizeSessionSummary(session) {
@@ -404,18 +415,7 @@ function sanitizeUserPromptText(rawText) {
   if (typeof rawText !== "string") return "";
   const trimmed = rawText.trim();
   if (!trimmed) return "";
-  if (/^You are BigiBot, the coding agent for the Bigin frontend team\./.test(trimmed)) {
-    return "";
-  }
-  if (!trimmed.startsWith("ACTIVE PROJECT:")) return trimmed;
-
-  const firstDivider = trimmed.indexOf("\n\n---\n\n");
-  if (firstDivider === -1) return trimmed;
-  const afterHeader = trimmed.slice(firstDivider + "\n\n---\n\n".length);
-  const contextDivider = "\n\n---\nRelevant Bigin/Lyte reference material";
-  const contextIdx = afterHeader.indexOf(contextDivider);
-  if (contextIdx === -1) return afterHeader.trim();
-  return afterHeader.slice(0, contextIdx).trim();
+  return trimmed;
 }
 
 function normalizeSessionMessages(messages) {
@@ -450,12 +450,134 @@ function normalizeSessionMessages(messages) {
       text,
       opencodeMessageId: info.id,
       model,
-      agentMode: info.mode || "build",
+      agentMode: info.mode || null,
       createdAt: Number(info.time?.created || 0),
     });
   }
 
   return normalized;
+}
+
+function toPromptModel(input) {
+  if (!input) return null;
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    const slash = trimmed.indexOf("/");
+    if (slash <= 0 || slash >= trimmed.length - 1) return null;
+    const providerID = canonicalProviderID(trimmed.slice(0, slash));
+    const modelID = trimmed.slice(slash + 1).trim();
+    if (!providerID || !modelID) return null;
+    return { providerID, modelID };
+  }
+  if (typeof input === "object") {
+    const providerID = canonicalProviderID(input.providerID);
+    const modelID = typeof input.modelID === "string" ? input.modelID.trim() : "";
+    if (!providerID || !modelID) return null;
+    return { providerID, modelID };
+  }
+  return null;
+}
+
+function canonicalProviderID(providerID) {
+  if (typeof providerID !== "string") return "";
+  const normalized = providerID.trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "github") return "github-copilot";
+  return normalized;
+}
+
+function modelToString(model) {
+  const parsed = toPromptModel(model);
+  if (!parsed) return "";
+  return `${parsed.providerID}/${parsed.modelID}`;
+}
+
+function normalizeModelCatalog(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const providers = Array.isArray(data.providers)
+    ? data.providers
+    : Array.isArray(data.all)
+      ? data.all
+      : Array.isArray(data)
+        ? data
+        : [];
+  const out = [];
+
+  for (const provider of providers) {
+    const providerID = canonicalProviderID(provider?.id);
+    if (!providerID) continue;
+    const providerName = typeof provider?.name === "string" && provider.name.trim()
+      ? provider.name.trim()
+      : providerID;
+    const models = provider?.models && typeof provider.models === "object"
+      ? provider.models
+      : {};
+
+    for (const [modelKey, modelInfo] of Object.entries(models)) {
+      const modelID = typeof modelInfo?.id === "string" && modelInfo.id.trim()
+        ? modelInfo.id.trim()
+        : String(modelKey || "").trim();
+      if (!modelID) continue;
+      const modelName = typeof modelInfo?.name === "string" && modelInfo.name.trim()
+        ? modelInfo.name.trim()
+        : modelID;
+      out.push({
+        providerID,
+        providerName,
+        modelID,
+        modelName,
+        label: `${providerName} / ${modelName}`,
+        value: `${providerID}/${modelID}`,
+      });
+    }
+  }
+
+  out.sort((a, b) => {
+    const providerCmp = a.providerName.localeCompare(b.providerName);
+    if (providerCmp !== 0) return providerCmp;
+    return a.modelName.localeCompare(b.modelName);
+  });
+
+  return out;
+}
+
+function formatUnknownError(input, fallback = "Unknown agent error") {
+  if (!input) return fallback;
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    return trimmed || fallback;
+  }
+  if (input instanceof Error) {
+    const message = typeof input.message === "string" ? input.message.trim() : "";
+    return message || fallback;
+  }
+  if (typeof input === "object") {
+    if (input.name === "UnknownError" && typeof input.data?.message === "string") {
+      const msg = input.data.message.trim();
+      if (msg) return msg;
+    }
+    const candidates = [
+      input.message,
+      input.error?.message,
+      input.error?.cause,
+      input.cause?.message,
+      input.cause,
+      input.error,
+      input.detail,
+    ];
+    for (const candidate of candidates) {
+      const message = formatUnknownError(candidate, "");
+      if (message) return message;
+    }
+    try {
+      const encoded = JSON.stringify(input);
+      if (encoded && encoded !== "{}") return encoded;
+    } catch {
+      // noop
+    }
+  }
+  return fallback;
 }
 
 function extractTextFromMessageUpdatedProperties(properties) {
@@ -640,11 +762,14 @@ function safeActivityFromToolEvent(tool, state, phase) {
  * @returns {Promise<{ url: string, proc: ChildProcess }>}
  */
 async function spawnOpencodeServer(projectPath) {
-  const cavemanProc = await maybeStartCavemanProxy();
+  // Caveman Proxy temporarily disabled.
+  // BiginVibe currently uses the default OpenCode SDK flow.
+  // To re-enable: set USE_CAVEMAN_PROXY = true in shared/opencodeConfig.js
+  const cavemanProc = USE_CAVEMAN_PROXY ? await maybeStartCavemanProxy() : null;
   const childEnv = { ...process.env };
   let cavemanProviderBaseUrl = null;
 
-  if (BIGIBOT_CAVEMAN_ENABLED) {
+  if (USE_CAVEMAN_PROXY && BIGIBOT_CAVEMAN_ENABLED) {
     cavemanProviderBaseUrl = buildCavemanProviderBaseUrl();
     const provider = buildOpencodeProviderConfigForCaveman(cavemanProviderBaseUrl);
     childEnv.OPENCODE_CONFIG_CONTENT = JSON.stringify({ provider });
@@ -703,6 +828,7 @@ class OpenCodeService {
     this.activePromptBySession = new Map(); // sessionId -> { assistantMessageId }
     this.messageRoleBySession = new Map(); // sessionId -> Map<messageId, role>
     this.cancelRequestedBySession = new Set();
+    this.modelCatalogByProject = new Map(); // projectPath -> { data, expiresAt }
   }
 
   _rememberMessageRole(sessionId, messageId, role) {
@@ -740,10 +866,14 @@ class OpenCodeService {
     // Editor application directory.
     const { url, proc, cavemanProc, cavemanProviderBaseUrl } = await spawnOpencodeServer(project.path);
 
-    if (BIGIBOT_CAVEMAN_ENABLED) {
+    if (USE_CAVEMAN_PROXY && BIGIBOT_CAVEMAN_ENABLED) {
       const startupSource = cavemanProc ? "autostarted" : "existing";
       console.info(
         `[OpenCodeService] Caveman routing enabled (${startupSource} proxy): ${BIGIBOT_CAVEMAN_PROVIDER} -> ${cavemanProviderBaseUrl}`
+      );
+    } else {
+      console.info(
+        `[OpenCodeService] Caveman Proxy disabled. Using OpenCode SDK default flow.`
       );
     }
 
@@ -830,10 +960,10 @@ class OpenCodeService {
     const { client } = this.opencode;
     const res = await client.session.list({ query: { directory: project.path } });
     const sessions = Array.isArray(res?.data) ? res.data : [];
-    return sessions
-      .filter((session) => sessionBelongsToProject(session, project.path))
-      .map(normalizeSessionSummary)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const normalized = sessions.map(normalizeSessionSummary);
+    const filtered = normalized.filter((session) => sessionBelongsToProject(session, project.path));
+    const visible = filtered.length ? filtered : normalized;
+    return visible.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   async getSession(project, sessionId) {
@@ -919,19 +1049,100 @@ class OpenCodeService {
     return true;
   }
 
+  async getModels(project, forceRefresh = false) {
+    await this._ensureServerForProject(project);
+    const cacheKey = project.path;
+    const now = Date.now();
+    const cached = this.modelCatalogByProject.get(cacheKey);
+    if (!forceRefresh && cached?.data && cached.expiresAt > now) {
+      return cached.data;
+    }
+
+    const { client } = this.opencode;
+    const query = { directory: project.path };
+
+    let payload = null;
+    let config = null;
+    try {
+      const configRes = await client.config.get({ query });
+      config = configRes?.data || null;
+    } catch {
+      config = null;
+    }
+    try {
+      const providersRes = await client.config.providers({ query });
+      payload = providersRes?.data || null;
+    } catch {
+      try {
+        const providerRes = await client.provider.list({ query });
+        payload = providerRes?.data || null;
+      } catch {
+        payload = null;
+      }
+    }
+
+    const models = normalizeModelCatalog(payload);
+    const configuredModel = toPromptModel(config?.model);
+    const defaultModel = configuredModel && models.some(
+      (model) => model.providerID === configuredModel.providerID
+        && model.modelID === configuredModel.modelID
+    )
+      ? configuredModel
+      : null;
+
+    if (defaultModel) {
+      const present = models.some(
+        (m) => m.providerID === defaultModel.providerID && m.modelID === defaultModel.modelID
+      );
+      if (!present) {
+        models.unshift({
+          providerID: defaultModel.providerID,
+          providerName: defaultModel.providerID,
+          modelID: defaultModel.modelID,
+          modelName: defaultModel.modelID,
+          label: `${defaultModel.providerID} / ${defaultModel.modelID}`,
+          value: modelToString(defaultModel),
+        });
+      }
+    }
+
+    const data = {
+      models,
+      defaultModel,
+      fetchedAt: now,
+    };
+    this.modelCatalogByProject.set(cacheKey, {
+      data,
+      expiresAt: now + 60_000,
+    });
+    return data;
+  }
+
+  async getAgents(project) {
+    await this._ensureServerForProject(project);
+    const response = await this.opencode.client.app.agents({
+      query: { directory: project.path },
+    });
+    return Array.isArray(response?.data) ? response.data : [];
+  }
+
   /**
    * @param {string} sessionId
-   * @param {string} text - the user's natural-language request, already
-   *   enriched with any Bigin/Lyte component context by BigiBotService.
-   * @param {{ agent?: string, mode?: string }} [options]
+   * @param {string} text - the user's natural-language request.
+   * @param {{ agent?: string, model?: { providerID: string, modelID: string } | string }} [options]
    */
   async sendPrompt(sessionId, text, options = {}) {
     if (!this.opencode) throw new Error("OpenCode server is not running for this project.");
     const { client } = this.opencode;
+    const selectedModel = toPromptModel(options.model);
+    const selectedModelLabel = modelToString(selectedModel);
     const activeState = {
       assistantMessageId: null,
-      mode: options.mode || "build",
+      agent: typeof options.agent === "string" ? options.agent : null,
       hasVisibleOutput: false,
+      model: selectedModelLabel,
+      hadError: false,
+      errorMessage: "",
     };
     this.activePromptBySession.set(sessionId, activeState);
     bus.emitEvent(EVENTS.AGENT_THINKING, { sessionId });
@@ -943,10 +1154,7 @@ class OpenCodeService {
     });
     try {
       const body = {
-        model: {
-          providerID: "github",      // ← Provider ID
-          modelID: "gpt-5.3-codex"  // ← Model ID
-        },
+        ...(selectedModel ? { model: selectedModel } : {}),
         parts: [{ type: "text", text }],
       };
       if (typeof options.agent === "string" && options.agent.trim()) {
@@ -955,8 +1163,12 @@ class OpenCodeService {
 
       const result = await client.session.prompt({
         path: { id: sessionId },
+        query: { directory: this.project?.path },
         body,
       });
+      if (activeState.hadError && !activeState.hasVisibleOutput) {
+        throw new Error(activeState.errorMessage || "Agent run failed.");
+      }
       if (process.env.BIGINVIBE_CHAT_DEBUG === "true") {
         const shape = {
           hasData: !!result?.data,
@@ -974,10 +1186,10 @@ class OpenCodeService {
         bus.emitEvent(EVENTS.AGENT_MESSAGE, {
           sessionId,
           messageId: null,
-          model: BIGIBOT_MODEL,
+          model: selectedModelLabel,
           text: `[debug] prompt result shape: ${JSON.stringify(shape)}`,
           kind: "final",
-          agentMode: options.mode || "build",
+          agentMode: activeState.agent,
         });
       }
       const active = this.activePromptBySession.get(sessionId);
@@ -1004,15 +1216,19 @@ class OpenCodeService {
         bus.emitEvent(EVENTS.AGENT_MESSAGE, {
           sessionId,
           messageId: assistantMessageId,
-          model: BIGIBOT_MODEL,
+          model: selectedModelLabel,
           text: finalText,
           kind: "final",
-          agentMode: active?.mode || "build",
+          agentMode: active?.agent || null,
         });
         if (active) active.hasVisibleOutput = true;
       } else {
         if (!active?.hasVisibleOutput) {
           await this._waitForVisibleOutput(sessionId, 1400);
+
+          if (active?.hadError) {
+            throw new Error(active.errorMessage || "Agent run failed.");
+          }
 
           if (active?.hasVisibleOutput) {
             bus.emitEvent(EVENTS.AGENT_COMPLETED, { sessionId });
@@ -1025,10 +1241,10 @@ class OpenCodeService {
             bus.emitEvent(EVENTS.AGENT_MESSAGE, {
               sessionId,
               messageId: assistantMessageId,
-              model: BIGIBOT_MODEL,
+              model: selectedModelLabel,
               text: finalText,
               kind: "final",
-              agentMode: active?.mode || "build",
+              agentMode: active?.agent || null,
             });
             if (active) active.hasVisibleOutput = true;
             bus.emitEvent(EVENTS.AGENT_COMPLETED, { sessionId });
@@ -1041,10 +1257,10 @@ class OpenCodeService {
             bus.emitEvent(EVENTS.AGENT_MESSAGE, {
               sessionId,
               messageId: assistantMessageId,
-              model: BIGIBOT_MODEL,
+              model: selectedModelLabel,
               text: finalText,
               kind: "final",
-              agentMode: active?.mode || "build",
+              agentMode: active?.agent || null,
             });
             if (active) active.hasVisibleOutput = true;
           }
@@ -1052,6 +1268,10 @@ class OpenCodeService {
           if (active?.hasVisibleOutput) {
             bus.emitEvent(EVENTS.AGENT_COMPLETED, { sessionId });
             return result.data;
+          }
+
+          if (active?.hadError) {
+            throw new Error(active.errorMessage || "Agent run failed.");
           }
 
           if (process.env.BIGINVIBE_CHAT_DEBUG === "true") {
@@ -1062,16 +1282,16 @@ class OpenCodeService {
             bus.emitEvent(EVENTS.AGENT_MESSAGE, {
               sessionId,
               messageId: null,
-              model: BIGIBOT_MODEL,
+              model: selectedModelLabel,
               text: `[debug] no visible text payload: ${clipped}`,
               kind: "final",
-              agentMode: active?.mode || "build",
+              agentMode: active?.agent || null,
             });
           }
           bus.emitEvent(EVENTS.AGENT_ERROR, {
             sessionId,
             error: "Agent finished but returned no visible text response.",
-            agentMode: active?.mode || "build",
+              agentMode: active?.agent || null,
           });
         }
       }
@@ -1085,6 +1305,9 @@ class OpenCodeService {
       });
       return result.data;
     } catch (err) {
+      if (activeState.hadError) {
+        throw err;
+      }
       if (isFetchFailure(err)) {
         bus.emitEvent(EVENTS.AGENT_ACTIVITY, {
           sessionId,
@@ -1095,7 +1318,7 @@ class OpenCodeService {
         bus.emitEvent(EVENTS.AGENT_ERROR, {
           sessionId,
           error: `Agent request failed: ${err.message}`,
-          agentMode: options.mode || "build",
+          agentMode: activeState.agent,
         });
         bus.emitEvent(EVENTS.AGENT_COMPLETED, { sessionId });
         throw err;
@@ -1109,7 +1332,7 @@ class OpenCodeService {
       bus.emitEvent(EVENTS.AGENT_ERROR, {
         sessionId,
         error: `Agent could not complete the requested change: ${err.message}`,
-        agentMode: options.mode || "build",
+        agentMode: activeState.agent,
       });
       throw err;
     } finally {
@@ -1189,10 +1412,10 @@ class OpenCodeService {
           bus.emitEvent(EVENTS.AGENT_MESSAGE, {
             sessionId: info.sessionID,
               messageId: info.id,
-              model: BIGIBOT_MODEL,
+              model: active.model || null,
               text,
               kind: "final",
-              agentMode: active.mode || "build",
+              agentMode: active.agent || null,
             });
           }
         }
@@ -1226,10 +1449,10 @@ class OpenCodeService {
         bus.emitEvent(EVENTS.AGENT_MESSAGE, {
           sessionId,
           messageId: messageId || active.assistantMessageId || null,
-          model: BIGIBOT_MODEL,
+          model: active.model || null,
           text,
           kind: "final",
-          agentMode: active.mode || "build",
+          agentMode: active.agent || null,
         });
         break;
       }
@@ -1305,10 +1528,9 @@ class OpenCodeService {
           bus.emitEvent(EVENTS.AGENT_MESSAGE, {
             sessionId,
             messageId: part.messageID,
-            // model: BIGIBOT_MODEL,
             text: textChunk,
             kind: "delta",
-            agentMode: active.mode || "build",
+            agentMode: active.agent || null,
           });
         }
         break;
@@ -1319,6 +1541,15 @@ class OpenCodeService {
       }
       case "session.error": {
         const sessionId = properties?.sessionID;
+        const active = this.activePromptBySession.get(sessionId);
+        const errorMessage = formatUnknownError(
+          properties?.error || properties?.message,
+          "Unknown agent error"
+        );
+        if (active) {
+          active.hadError = true;
+          active.errorMessage = errorMessage;
+        }
         const isCancellation = this.cancelRequestedBySession.has(sessionId);
         if (isCancellation) {
           this.cancelRequestedBySession.delete(sessionId);
@@ -1339,8 +1570,8 @@ class OpenCodeService {
         });
         bus.emitEvent(EVENTS.AGENT_ERROR, {
           sessionId,
-          error: properties?.error?.message || "Unknown agent error",
-          agentMode: this.activePromptBySession.get(sessionId)?.mode || "build",
+          error: errorMessage,
+          agentMode: active?.agent || null,
         });
         bus.emitEvent(EVENTS.AGENT_COMPLETED, { sessionId });
         break;
@@ -1406,16 +1637,21 @@ class OpenCodeService {
     // project (or a previous open of the same project) can never be reused
     // after a shutdown. A fresh session will be created on the next request.
     this.sessionsByProject.clear();
+    this.modelCatalogByProject.clear();
     this.activePromptBySession.clear();
     this.messageRoleBySession.clear();
   }
 
   async getCavemanStatus() {
+    // Caveman Proxy temporarily disabled.
+    // BiginVibe currently uses the default OpenCode SDK flow.
+    // To re-enable: set USE_CAVEMAN_PROXY = true in shared/opencodeConfig.js
+
     const proxyUrl = normalizeBaseUrl(BIGIBOT_CAVEMAN_URL);
     let configuredBaseUrl = "";
     let configError = null;
 
-    if (BIGIBOT_CAVEMAN_ENABLED) {
+    if (BIGIBOT_CAVEMAN_ENABLED && USE_CAVEMAN_PROXY) {
       try {
         configuredBaseUrl = buildCavemanProviderBaseUrl();
       } catch (err) {
@@ -1423,12 +1659,14 @@ class OpenCodeService {
       }
     }
 
-    const reachable = proxyUrl ? await isHttpReachable(proxyUrl) : false;
+    const reachable = USE_CAVEMAN_PROXY && proxyUrl ? await isHttpReachable(proxyUrl) : false;
     const effectiveBaseUrl = this.opencode?.server?.cavemanProviderBaseUrl || configuredBaseUrl || "";
-    const routingActive = !!(BIGIBOT_CAVEMAN_ENABLED && effectiveBaseUrl);
+    const routingActive = !!(USE_CAVEMAN_PROXY && BIGIBOT_CAVEMAN_ENABLED && effectiveBaseUrl);
 
     return {
-      enabled: BIGIBOT_CAVEMAN_ENABLED,
+      enabled: false, // Always false — Caveman is disabled at runtime
+      runtimeDisabled: !USE_CAVEMAN_PROXY, // True when Caveman is disabled
+      configEnabled: BIGIBOT_CAVEMAN_ENABLED, // Shows what config says (for debugging)
       autostart: BIGIBOT_CAVEMAN_AUTOSTART,
       provider: BIGIBOT_CAVEMAN_PROVIDER,
       proxyUrl,

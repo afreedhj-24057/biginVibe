@@ -1,5 +1,5 @@
 "use client";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function formatLastOpened(value) {
   if (!value) return "Recently opened";
@@ -28,8 +28,39 @@ export default function WelcomeScreen({
   error = null,
   onOpenProject,
   onOpenRecent,
+  onRenameRecent,
 }) {
   const latestFive = useMemo(() => recents.slice(0, 5), [recents]);
+  const [renamingPath, setRenamingPath] = useState(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameInputRef = useRef(null);
+
+  useEffect(() => {
+    if (renamingPath) renameInputRef.current?.focus();
+  }, [renamingPath]);
+
+  function startRename(event, item) {
+    event.stopPropagation();
+    setRenamingPath(item.path);
+    setRenameDraft(item.displayName || item.name || "");
+  }
+
+  async function submitRename(item) {
+    const displayName = renameDraft.trim();
+    if (!displayName || !onRenameRecent) return;
+    try {
+      await onRenameRecent(item, displayName);
+      setRenamingPath(null);
+      setRenameDraft("");
+    } catch {
+      // The parent surfaces persistence errors and leaves the edit open.
+    }
+  }
+
+  function cancelRename() {
+    setRenamingPath(null);
+    setRenameDraft("");
+  }
 
   return (
     <div className="welcome-screen">
@@ -58,17 +89,55 @@ export default function WelcomeScreen({
       ) : (
         <div className="welcome-recents-grid">
           {latestFive.map((item) => (
-            <button
+            <div
               key={item.path}
               className="welcome-recent-tile"
-              onClick={() => onOpenRecent(item)}
-              disabled={busy}
-              aria-label={`Open ${item.name || "project"}`}
             >
-              <div className="welcome-recent-name">{item.name || "Unnamed project"}</div>
-              <div className="welcome-recent-path">{formatPathForCard(item.path)}</div>
-              <div className="welcome-recent-time">{formatLastOpened(item.lastOpenedAt)}</div>
-            </button>
+              {renamingPath === item.path ? (
+                <div className="welcome-recent-heading">
+                  <div className="welcome-recent-rename-wrap">
+                    <input
+                      ref={renameInputRef}
+                      type="text"
+                      className="welcome-recent-rename-input"
+                      value={renameDraft}
+                      onChange={(event) => setRenameDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          submitRename(item);
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelRename();
+                        }
+                      }}
+                      aria-label="Project display name"
+                    />
+                    <button type="button" onClick={() => submitRename(item)} disabled={!renameDraft.trim()} aria-label="Save project name">Save</button>
+                    <button type="button" onClick={cancelRename} aria-label="Cancel project rename">Cancel</button>
+                  </div>
+                  <div className="welcome-recent-path">{formatPathForCard(item.path)}</div>
+                  <div className="welcome-recent-time">{formatLastOpened(item.lastOpenedAt)}</div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="welcome-recent-open"
+                  onClick={() => onOpenRecent(item)}
+                  disabled={busy}
+                  aria-label={`Open ${item.displayName || item.name || "project"}`}
+                >
+                  <div className="welcome-recent-heading">
+                    <div className="welcome-recent-name">{item.displayName || item.name || "Unnamed project"}</div>
+                  </div>
+                  <div className="welcome-recent-path">{formatPathForCard(item.path)}</div>
+                  <div className="welcome-recent-time">{formatLastOpened(item.lastOpenedAt)}</div>
+                </button>
+              )}
+              {renamingPath !== item.path ? (
+                <button type="button" className="welcome-recent-rename-btn" onClick={(event) => startRename(event, item)} disabled={busy} aria-label={`Rename ${item.displayName || item.name || "project"}`} title="Rename project">Rename</button>
+              ) : null}
+            </div>
           ))}
         </div>
       )}

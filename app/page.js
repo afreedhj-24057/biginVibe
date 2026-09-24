@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { bridge } from "../lib/bridge";
 import { useRuntimeEvents } from "../lib/useRuntimeEvents";
 import ProjectControls from "../components/ProjectControls/ProjectControls";
@@ -8,6 +8,7 @@ import ChangesPanel from "../components/Changes/ChangesPanel";
 import PreviewPanel from "../components/Preview/PreviewPanel";
 import TerminalPanel from "../components/Terminal/TerminalPanel";
 import WelcomeScreen from "../components/Welcome/WelcomeScreen";
+import GitStatusBar from "../components/StatusBar/GitStatusBar";
 
 const SIDEBAR_MIN_WIDTH = 300;
 const SIDEBAR_MAX_WIDTH = 500;
@@ -42,14 +43,23 @@ export default function Page() {
   const [envStatus, setEnvStatus] = useState(null);
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
+  const [sessionListStatus, setSessionListStatus] = useState("idle");
+  const [sessionListError, setSessionListError] = useState("");
+  const sessionListRequestRef = useRef(0);
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [activeModel, setActiveModel] = useState(null);
+  const [modelOptions, setModelOptions] = useState([]);
+  const [selectedModelValue, setSelectedModelValue] = useState("");
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelLoadError, setModelLoadError] = useState("");
   const [cavemanStatus, setCavemanStatus] = useState(null);
-  const [selectedAgentMode, setSelectedAgentMode] = useState("build");
+  const [agents, setAgents] = useState([]);
+  const [selectedAgent, setSelectedAgent] = useState("");
   const [sidebarTab, setSidebarTab] = useState("chat"); // chat | changes
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
-  const [terminalCollapsed, setTerminalCollapsed] = useState(false);
+  const [terminalCollapsed, setTerminalCollapsed] = useState(true);
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [agentWorking, setAgentWorking] = useState(false);
   const [agentActivities, setAgentActivities] = useState([]);
@@ -64,6 +74,7 @@ export default function Page() {
   // manually-typed URL/path survives unrelated re-renders and is only
   // overridden by an explicit start/restart, per its own address-bar spec.
   const [previewGeneration, setPreviewGeneration] = useState(0);
+  const [gitStatus, setGitStatus] = useState(null);
 
   useEffect(() => {
     // Hydrate from the authoritative workspace snapshot on mount.
@@ -71,9 +82,6 @@ export default function Page() {
     bridge.workspace.current().then((ws) => {
       if (ws?.project) setProject(ws.project);
       if (ws?.opencodeSessionId) setActiveSessionId(ws.opencodeSessionId);
-      if (ws?.project) {
-        setSelectedAgentMode(ws.project.hasBigiBotAgent ? "bigibot" : "build");
-      }
       if (ws?.devServer || ws?.previewUrl) {
         setEnvStatus({ devServer: ws.devServer, previewUrl: ws.previewUrl });
       }
@@ -90,6 +98,133 @@ export default function Page() {
       setRecentProjects([]);
     });
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    bridge.git.statusModel?.().then((status) => {
+      if (!cancelled) setGitStatus(status || null);
+    }).catch(() => {
+      if (!cancelled) setGitStatus(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const normalizeModelValue = useCallback((input) => {
+    if (!input) return "";
+    if (typeof input === "string") {
+      const trimmed = input.trim();
+      if (!trimmed.includes("/")) return "";
+      return trimmed;
+    }
+    if (typeof input === "object") {
+      const providerID = typeof input.providerID === "string" ? input.providerID.trim() : "";
+      const modelID = typeof input.modelID === "string" ? input.modelID.trim() : "";
+      if (!providerID || !modelID) return "";
+      return `${providerID}/${modelID}`;
+    }
+    return "";
+  }, []);
+
+  const parseModelValue = useCallback((value) => {
+    if (!value || typeof value !== "string") return null;
+    const trimmed = value.trim();
+    const slash = trimmed.indexOf("/");
+    if (slash <= 0 || slash >= trimmed.length - 1) return null;
+    const providerID = trimmed.slice(0, slash).trim();
+    const modelID = trimmed.slice(slash + 1).trim();
+    if (!providerID || !modelID) return null;
+    return { providerID, modelID };
+  }, []);
+
+  const loadModels = useCallback(async (forceRefresh = false) => {
+    if (!project?.path) {
+      setModelOptions([]);
+      setSelectedModelValue("");
+      setModelLoadError("");
+      setModelLoading(false);
+      return;
+    }
+
+    setModelLoading(true);
+    setModelLoadError("");
+    try {
+      const payload = await bridge.chat.models?.(forceRefresh);
+      const models = Array.isArray(payload?.models)
+        ? payload.models
+            .filter((m) => m && typeof m.value === "string" && m.value.trim())
+            .map((m) => ({
+              value: m.value.trim(),
+              providerID: typeof m.providerID === "string" ? m.providerID.trim() : "",
+              providerName: typeof m.providerName === "string" && m.providerName.trim()
+                ? m.providerName.trim()
+                : "",
+              modelID: typeof m.modelID === "string" ? m.modelID.trim() : "",
+              modelName: typeof m.modelName === "string" && m.modelName.trim()
+                ? m.modelName.trim()
+                : (typeof m.label === "string" && m.label.trim() ? m.label.trim() : m.value.trim()),
+            }))
+        : [];
+
+      const canonicalize = (value) => {
+        const parsed = parseModelValue(value);
+        if (!parsed) return "";
+        const providerID = parsed.providerID === "github" ? "github-copilot" : parsed.providerID;
+        return `${providerID}/${parsed.modelID}`;
+      };
+       const canonicalModels = models.map((m) => ({
+         ...m,
+         value: canonicalize(m.value) || m.value,
+       }));
+
+      const knownValues = new Set(canonicalModels.map((m) => m.value));
+      const current = canonicalize(normalizeModelValue(selectedModelValue || activeModel));
+      const serverDefault = canonicalize(normalizeModelValue(payload?.defaultModel));
+      const nextSelected = knownValues.has(current)
+        ? current
+        : knownValues.has(serverDefault)
+          ? serverDefault
+          : canonicalModels[0]?.value || "";
+
+      setModelOptions(canonicalModels);
+      setSelectedModelValue(nextSelected);
+      if (nextSelected) setActiveModel(nextSelected);
+    } catch (err) {
+      setModelOptions([]);
+      setSelectedModelValue("");
+      setModelLoadError(err?.message || "Failed to load models.");
+    } finally {
+      setModelLoading(false);
+    }
+  }, [project?.path, selectedModelValue, activeModel, normalizeModelValue]);
+
+  const loadAgents = useCallback(async () => {
+    if (!project?.path) {
+      setAgents([]);
+      setSelectedAgent("");
+      return;
+    }
+
+    try {
+      const payload = await bridge.chat.agents?.();
+      const available = Array.isArray(payload)
+        ? payload
+            .filter((agent) => agent && typeof agent.name === "string" && agent.name.trim())
+            .filter((agent) => agent.hidden !== true)
+            .filter((agent) => agent.mode !== "subagent")
+        : [];
+      setAgents(available);
+      setSelectedAgent((current) => (
+        available.some((agent) => agent.name === current)
+          ? current
+          : available[0]?.name || ""
+      ));
+    } catch {
+      setAgents([]);
+      setSelectedAgent("");
+    }
+  }, [project?.path]);
 
   const refreshRecents = useCallback(() => {
     Promise.resolve(bridge.project.recents?.()).then((recents) => {
@@ -131,6 +266,18 @@ export default function Page() {
     }
   }, [refreshRecents]);
 
+  const handleWelcomeRenameRecent = useCallback(async (recent, displayName) => {
+    if (!recent?.path) return;
+    setWelcomeError(null);
+    try {
+      await bridge.project.renameRecent(recent.path, displayName);
+      refreshRecents();
+    } catch (err) {
+      setWelcomeError(err?.message || String(err));
+      throw err;
+    }
+  }, [refreshRecents]);
+
   const refreshCavemanStatus = useCallback(() => {
     Promise.resolve(bridge.chat.cavemanStatus?.()).then((status) => {
       if (status) setCavemanStatus(status);
@@ -152,25 +299,53 @@ export default function Page() {
   }, []);
 
   const refreshSessions = useCallback(async (opts = {}) => {
-    const listed = await bridge.chat.listSessions();
-    const next = sortSessions(Array.isArray(listed) ? listed : []);
-    setSessions(next);
-
-    const preferred = opts.preferredSessionId;
-    const current = opts.currentSessionId;
-    const fallback = preferred || current || null;
-    if (fallback && next.some((s) => s.id === fallback)) {
-      setActiveSessionId(fallback);
-      return { sessions: next, active: fallback };
+    const requestId = ++sessionListRequestRef.current;
+    const projectPath = project?.path;
+    if (!projectPath) {
+      setSessionListStatus("idle");
+      setSessionListError("");
+      return { sessions: [], active: null };
     }
 
-    if (!next.length) {
-      setActiveSessionId(null);
-      setMessages([]);
-    }
+    setSessionListStatus("loading");
+    setSessionListError("");
+    try {
+      const listed = await bridge.chat.listSessions();
+      if (requestId !== sessionListRequestRef.current || project?.path !== projectPath) {
+        return { sessions: [], active: null };
+      }
 
-    return { sessions: next, active: null };
-  }, [sortSessions]);
+      const next = sortSessions(Array.isArray(listed) ? listed : []);
+      setSessions(next);
+      setSessionListStatus("success");
+
+      const preferred = opts.preferredSessionId;
+      const current = opts.currentSessionId;
+      const fallback = preferred || current || null;
+      if (fallback && next.some((s) => s.id === fallback)) {
+        setActiveSessionId(fallback);
+        return { sessions: next, active: fallback };
+      }
+
+      if (!next.length) {
+        setActiveSessionId(null);
+        setMessages([]);
+      }
+
+      return { sessions: next, active: null };
+    } catch (err) {
+      if (requestId === sessionListRequestRef.current && project?.path === projectPath) {
+        setSessionListStatus("error");
+        setSessionListError(err?.message || String(err));
+      }
+      throw err;
+    } finally {
+      // A stale request must not clear the status for a newer project/request.
+      if (requestId === sessionListRequestRef.current && project?.path === projectPath) {
+        setSessionListStatus((status) => status === "loading" ? "error" : status);
+      }
+    }
+  }, [project?.path, sortSessions]);
 
   const loadSessionMessages = useCallback(async (sessionId) => {
     if (!sessionId) {
@@ -201,7 +376,6 @@ export default function Page() {
 
   const createNewSession = useCallback(async ({ title } = {}) => {
     const payload = {
-      mode: selectedAgentMode,
       ...(title ? { title } : {}),
     };
     const createSession = bridge.chat.newSession;
@@ -223,7 +397,7 @@ export default function Page() {
     setAgentActivityExpanded(false);
     await refreshSessions({ preferredSessionId: created.id });
     return created;
-  }, [selectedAgentMode, refreshSessions, addMessage]);
+  }, [refreshSessions, addMessage]);
 
   const sendPrompt = useCallback(async (value) => {
     if (!project) {
@@ -255,18 +429,30 @@ export default function Page() {
 
     addMessage({ role: "user", text });
     try {
+      const selectedModel = parseModelValue(selectedModelValue);
       await bridge.chat.sendMessage({
         text,
-        mode: selectedAgentMode,
+        ...(selectedAgent ? { agent: selectedAgent } : {}),
         sessionId: targetSessionId,
+        ...(selectedModel ? { model: selectedModel } : {}),
         ...(sessionTitle ? { sessionTitle } : {}),
       });
       await refreshSessions({ preferredSessionId: targetSessionId });
     } catch (err) {
-      addMessage({ role: "error", text: err?.message || String(err) });
+      const nextText = err?.message || String(err);
+      setMessages((prev) => {
+        if (!Array.isArray(prev) || prev.length === 0) {
+          return [...prev, { role: "error", text: nextText }];
+        }
+        const last = prev[prev.length - 1];
+        if (last?.role === "error" && String(last?.text || "") === String(nextText || "")) {
+          return prev;
+        }
+        return [...prev, { role: "error", text: nextText }];
+      });
       throw err;
     }
-  }, [project, activeSessionId, selectedAgentMode, sessions, createNewSession, addMessage, refreshSessions]);
+  }, [project, activeSessionId, selectedAgent, sessions, createNewSession, refreshSessions, selectedModelValue, parseModelValue]);
 
   const renameSession = useCallback(async (sessionId, title) => {
     await bridge.chat.renameSession(sessionId, title);
@@ -321,6 +507,12 @@ export default function Page() {
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
   }, [sidebarCollapsed, sidebarWidth]);
+
+  const refreshGitStatus = useCallback(() => {
+    bridge.git.refresh?.().then((status) => {
+      if (status) setGitStatus(status);
+    }).catch(() => {});
+  }, []);
 
   const applyAssistantMessage = useCallback((payload) => {
     const text = payload?.text;
@@ -393,13 +585,18 @@ export default function Page() {
       case "workspace.opened":
       case "workspace.switched":
         // Full workspace snapshot — update project + reset chat.
+        sessionListRequestRef.current += 1;
+        setWorkspaceRevision((revision) => revision + 1);
         setProject(evt.payload.project);
         setMessages([]);
         setSessions([]);
+        setSessionListStatus("idle");
+        setSessionListError("");
         setActiveSessionId(evt.payload.opencodeSessionId || null);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
-        setSelectedAgentMode(evt.payload.project?.hasBigiBotAgent ? "bigibot" : "build");
+        setAgents([]);
+        setSelectedAgent("");
         setAgentWorking(false);
         if (evt.payload.devServer || evt.payload.previewUrl) {
           setEnvStatus({ devServer: evt.payload.devServer, previewUrl: evt.payload.previewUrl });
@@ -408,17 +605,27 @@ export default function Page() {
         }
         refreshCavemanStatus();
         refreshRecents();
+        loadModels(false);
         break;
       case "workspace.closed":
+        sessionListRequestRef.current += 1;
+        setWorkspaceRevision((revision) => revision + 1);
         setProject(null);
         setEnvStatus(null);
         setMessages([]);
         setSessions([]);
+        setSessionListStatus("idle");
+        setSessionListError("");
         setActiveSessionId(null);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
-        setSelectedAgentMode("build");
+        setAgents([]);
+        setSelectedAgent("");
         setAgentWorking(false);
+        setModelOptions([]);
+        setSelectedModelValue("");
+        setModelLoadError("");
+        setModelLoading(false);
         refreshCavemanStatus();
         refreshRecents();
         break;
@@ -427,32 +634,51 @@ export default function Page() {
       // Legacy project events (still emitted by ProjectManager for back-compat)
       // -----------------------------------------------------------------------
       case "project.opened":
+        sessionListRequestRef.current += 1;
+        setWorkspaceRevision((revision) => revision + 1);
         setProject(evt.payload);
         setMessages([]);
         setSessions([]);
+        setSessionListStatus("idle");
+        setSessionListError("");
         setActiveSessionId(null);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
-        setSelectedAgentMode(evt.payload?.hasBigiBotAgent ? "bigibot" : "build");
+        setAgents([]);
+        setSelectedAgent("");
         setAgentWorking(false);
+        loadModels(false);
         refreshCavemanStatus();
         refreshRecents();
         break;
       case "project.closed":
+        sessionListRequestRef.current += 1;
+        setWorkspaceRevision((revision) => revision + 1);
         setProject(null);
         setEnvStatus(null);
         setMessages([]);
         setSessions([]);
+        setSessionListStatus("idle");
+        setSessionListError("");
         setActiveSessionId(null);
         setAgentActivities([]);
         setAgentActivityExpanded(false);
-        setSelectedAgentMode("build");
+        setAgents([]);
+        setSelectedAgent("");
         setAgentWorking(false);
+        setModelOptions([]);
+        setSelectedModelValue("");
+        setModelLoadError("");
+        setModelLoading(false);
         refreshCavemanStatus();
         refreshRecents();
         break;
       case "project.error":
         addMessage({ role: "error", text: evt.payload.error });
+        break;
+
+      case "git.status.updated":
+        setGitStatus(evt.payload || null);
         break;
 
       case "environment.starting":
@@ -507,7 +733,16 @@ export default function Page() {
         if (!isActiveSessionEvent(evt.payload)) break;
         setAgentWorking(false);
         setAgentActivityExpanded(false);
-        addMessage({ role: "error", text: evt.payload.error });
+        setMessages((prev) => {
+          if (!Array.isArray(prev) || prev.length === 0) {
+            return [...prev, { role: "error", text: evt.payload.error }];
+          }
+          const last = prev[prev.length - 1];
+          if (last?.role === "error" && String(last?.text || "") === String(evt.payload.error || "")) {
+            return prev;
+          }
+          return [...prev, { role: "error", text: evt.payload.error }];
+        });
         refreshCavemanStatus();
         break;
 
@@ -520,6 +755,7 @@ export default function Page() {
     applyAgentActivity,
     refreshCavemanStatus,
     refreshRecents,
+    loadModels,
     refreshSessions,
     openSession,
     activeSessionId,
@@ -544,6 +780,12 @@ export default function Page() {
     return () => {
       cancelled = true;
     };
+  }, [project?.path, workspaceRevision]);
+
+  useEffect(() => {
+    if (!project?.path) return;
+    loadModels(false).catch(() => {});
+    loadAgents().catch(() => {});
   }, [project?.path]);
 
   if (!project) {
@@ -555,6 +797,7 @@ export default function Page() {
           error={welcomeError}
           onOpenProject={handleWelcomeOpenProject}
           onOpenRecent={handleWelcomeOpenRecent}
+          onRenameRecent={handleWelcomeRenameRecent}
         />
       </div>
     );
@@ -616,8 +859,10 @@ export default function Page() {
           <div className="sidebar-content" style={{ display: sidebarCollapsed ? "none" : "flex" }}>
             {sidebarTab === "chat" ? (
                 <ChatPanel
-                  project={project}
-                  sessions={sessions}
+                   project={project}
+                   sessions={sessions}
+                   sessionListStatus={sessionListStatus}
+                   sessionListError={sessionListError}
                   activeSessionId={activeSessionId}
                   onOpenSession={openSession}
                   onNewSession={createNewSession}
@@ -627,13 +872,22 @@ export default function Page() {
                   messages={messages}
                   onSend={sendPrompt}
                   agentWorking={agentWorking}
-                  activeModel={activeModel}
                   cavemanStatus={cavemanStatus}
                   activityEntries={agentActivities}
                   activityExpanded={agentActivityExpanded}
                   onToggleActivityExpanded={() => setAgentActivityExpanded((v) => !v)}
-                  selectedAgentMode={selectedAgentMode}
-                  onAgentModeChange={setSelectedAgentMode}
+                   agents={agents}
+                   selectedAgent={selectedAgent}
+                   onAgentChange={setSelectedAgent}
+                  models={modelOptions}
+                  selectedModelValue={selectedModelValue}
+                   onModelChange={(value) => {
+                     setSelectedModelValue(value);
+                     if (value) setActiveModel(value);
+                   }}
+                  modelLoading={modelLoading}
+                  modelLoadError={modelLoadError}
+                  onRefreshModels={() => loadModels(true)}
                 />
             ) : (
               <ChangesPanel project={project} refreshToken={changesRefreshToken} />
@@ -665,6 +919,7 @@ export default function Page() {
         height={terminalHeight}
         onResize={setTerminalHeight}
       />
+      <GitStatusBar status={gitStatus} onRefresh={refreshGitStatus} />
     </div>
   );
 }

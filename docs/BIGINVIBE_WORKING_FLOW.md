@@ -6,7 +6,11 @@ This document describes the code as it exists today.
 
 ```mermaid
 flowchart TD
+  S[App starts] --> R[app/page.js loads project:recents]
+  R --> H[WelcomeScreen displays recent projects]
   U[User opens/switches folder] --> W[Workspace set to active project path]
+  H --> U1[Open recent project by path]
+  U1 --> W
   W --> T[Terminal + Dev Server run in that workspace]
   T --> P[Preview loads app URL]
   P --> N[CDN static requests intercepted to localhost active port]
@@ -14,11 +18,15 @@ flowchart TD
   C --> O[Agent tools read/write files in active workspace]
   O --> G[Git changes refresh in Changes panel]
   C --> V[Caveman optional proxy for provider routing]
+  H --> RN[Rename recent display name]
+  RN --> RP[ProjectManager persists displayName]
 ```
 
 | Topic | Current behavior |
 |---|---|
 | Folder import | Top bar `Open Project`/`Switch Project` selects directory and sets active workspace via `WorkspaceManager`. |
+| Recent projects | `app/page.js` loads `project:recents` on startup; `WelcomeScreen` displays the five most recent existing paths. |
+| Recent display names | Optional `displayName` is stored with the recent record. It changes Welcome presentation only; filesystem `path` remains project identity. |
 | Workspace scope | Active workspace path is propagated to terminal, dev server, OpenCode agent, and Git operations. |
 | Port allocation | Lyte dev server uses first free port in `3000..3009` (`lyte serve --port <n>`). |
 | Network interception | Preview intercepts CDN `static.localzohocdn.com/.../biginclient/...` and rewrites to `http://localhost:<active-port>/...`. |
@@ -38,6 +46,7 @@ flowchart TD
     C3[components/Terminal]
     C4[components/Preview]
     C5[components/Changes]
+    C6[components/Welcome]
   end
 
   subgraph Bridge[Preload/Bridge]
@@ -75,6 +84,7 @@ flowchart TD
   end
 
   P --> BR --> PR --> M
+  C6 --> P
   M --> WS
   M --> PM
   M --> TB
@@ -125,6 +135,7 @@ flowchart TD
 flowchart TD
   subgraph Renderer
     R1[ProjectControls handleOpen/handleSwitch]
+    R2[WelcomeScreen recent card]
   end
   subgraph Bridge
     B1[bridge.project.open/switch]
@@ -136,15 +147,45 @@ flowchart TD
   end
   subgraph Filesystem
     F1[detect package.json/bower/build files]
-    F2[read/write recents file]
+    F2[read/write userData/recent-projects.json]
   end
   R1 --> B1 --> M1 --> M2 --> M3 --> F1
+  R2 --> B1
   M3 --> F2
 ```
 
 - `WorkspaceManager` is the authoritative owner of active workspace state (`_project`, `_opencodeSessionId`, `_devServer`, `_previewUrl`) in `services/workspace/WorkspaceManager.js`.
 - There is no variable literally named `activeProjectPath`; active path is stored as `this._project.path` and exposed as `snapshot.projectPath`.
 - `project:open` switches atomically when a project already exists.
+- Opening a recent project passes its filesystem `path`; `displayName` is never used as the project identifier.
+- `_addToRecents()` updates recency and `lastOpenedAt` while preserving an existing `displayName`.
+- `getRecentProjects()` normalizes records, removes missing paths, sorts by `lastOpenedAt`, and rewrites the normalized list.
+
+### Recent project loading and rename
+
+```mermaid
+flowchart TD
+  A[app/page.js startup] --> B[bridge.project.recents]
+  B --> C[project:recents]
+  C --> D[ProjectManager.getRecentProjects]
+  D --> E[userData/recent-projects.json]
+  D --> F[recentProjects renderer state]
+  F --> G[WelcomeScreen: first five cards]
+  G --> H[Inline rename]
+  H --> I[bridge.project.renameRecent(path, displayName)]
+  I --> J[project:renameRecent]
+  J --> K[ProjectManager.renameRecentProject]
+  K --> E
+  K --> L[refreshRecents]
+  L --> F
+```
+
+- Recent records have the shape `{ path, name, lastOpenedAt, displayName? }`.
+- `name` is derived from the filesystem basename; `displayName` is optional user-facing metadata.
+- Cards display `displayName || name || "Unnamed project"`.
+- Rename trims the input and rejects an empty value. Persistence errors remain visible through the Welcome error state.
+- Existing records without `displayName` remain compatible and continue to use the basename fallback.
+- Electron stores the file under `app.getPath("userData")`; non-Electron contexts use `~/.bigin-vibe/recent-projects.json`.
 
 ### Active workspace propagation
 
@@ -402,9 +443,10 @@ flowchart TD
 ```
 
 - There is no in-app file explorer read/write implementation in current renderer/components.
-- Filesystem interactions currently occur in services for project detection, recents, instance list file, BigiBot KB reads, environment lock cleanup.
+- Filesystem interactions currently occur in services for project detection, recent-project metadata, instance list file, BigiBot KB reads, environment lock cleanup.
+- `ProjectManager` persists recents in `app.getPath("userData")/recent-projects.json` and falls back to `~/.bigin-vibe/recent-projects.json` outside Electron. It normalizes legacy `openedAt` values to `lastOpenedAt`, removes missing paths, sorts records, and preserves optional `displayName`.
 
-### Git flow (read-only)
+### Git flow (status/diff plus refresh)
 
 ```mermaid
 flowchart TD
@@ -424,7 +466,7 @@ flowchart TD
 ```
 
 - `GitManager` executes `git status --porcelain=v1` and `git diff` in active project cwd.
-- No commit/push APIs are exposed.
+- `git:refresh` can fetch remote state; no commit or push APIs are exposed.
 
 ## 7) IPC Communication
 
@@ -449,12 +491,24 @@ flowchart TD
 
 Primary IPC channels in `electron/main.js`:
 - Workspace: `workspace:current`
-- Project: `project:pickDirectory`, `project:open`, `project:switch`, `project:close`, `project:current`, `project:recents`
+- Project: `project:pickDirectory`, `project:open`, `project:switch`, `project:close`, `project:current`, `project:recents`, `project:renameRecent`
 - Environment: `environment:start`, `environment:stop`, `environment:restart`, `environment:status`
 - Terminal: `terminal:create`, `terminal:write`, `terminal:resize`, `terminal:stop`, `terminal:list`
-- Chat: `chat:sendMessage`, `chat:cancel`, `chat:model`, `chat:cavemanStatus`
+- Chat: `chat:listSessions`, `chat:newSession`, `chat:openSession`, `chat:sessionMessages`, `chat:renameSession`, `chat:forkSession`, `chat:deleteSession`, `chat:sendMessage`, `chat:cancel`, `chat:model`, `chat:models`, `chat:agents`, `chat:cavemanStatus`
 - Preview: `preview:instances`
-- Git: `git:status`, `git:diff`
+- Git: `git:status`, `git:statusModel`, `git:refresh`, `git:diff`, `git:diffCached`
+
+The recent-project rename bridge is:
+
+```text
+WelcomeScreen
+  -> app/page.js
+  -> lib/bridge.js
+  -> electron/preload.js
+  -> project:renameRecent
+  -> ProjectManager.renameRecentProject()
+  -> recent-projects.json
+```
 
 ## Workspace switching
 
@@ -527,6 +581,7 @@ flowchart TD
 
 End-to-end notes:
 - Open project sets active workspace in `WorkspaceManager`.
+- Welcome recent cards open projects using their filesystem `path`; custom `displayName` values do not affect workspace identity.
 - Terminal is the execution surface for both user commands and environment start commands.
 - Preview URL is derived by `EnvironmentManager` + `RedirectorManager` and loaded into renderer webview.
 - Chat triggers BigiBot/OpenCode; tool/file events propagate back to UI via runtime bus.
@@ -551,6 +606,9 @@ End-to-end notes:
 | Dev server running/command/port/preview URL | `EnvironmentManager` | `services/environment/EnvironmentManager.js` |
 | BigiBot KB cache + priming map | `BigiBotService` | `services/bigibot/BigiBotService.js` |
 | OpenCode server/client/session maps | `OpenCodeService` | `services/opencode/OpenCodeService.js` |
+| Durable recent-project metadata | `ProjectManager` | `services/project/ProjectManager.js` + `app.getPath("userData")/recent-projects.json` |
+| Renderer recent-project list and Welcome status | `app/page.js` | `app/page.js` |
+| Recent-card presentation and rename draft | `WelcomeScreen` | `components/Welcome/WelcomeScreen.js` |
 | Renderer chat/preview/ui state | `app/page.js` + components | `app/page.js` |
 
 ## Known Gaps / Risks
@@ -572,6 +630,7 @@ End-to-end notes:
 - `components/Preview/PreviewPanel.js`
 - `components/Terminal/TerminalPanel.js`
 - `components/Changes/ChangesPanel.js`
+- `components/Welcome/WelcomeScreen.js`
 - `services/workspace/WorkspaceManager.js`
 - `services/project/ProjectManager.js`
 - `services/environment/EnvironmentManager.js`
@@ -590,10 +649,14 @@ End-to-end notes:
 
 - Get current workspace snapshot: `workspace:current`.
 - Open/switch/close project: `project:open`, `project:switch`, `project:close`.
+- Load recent projects: `project:recents`.
+- Rename a recent project: `project:renameRecent(projectPath, displayName)`.
+- Recent-project persistence: `app.getPath("userData")/recent-projects.json`.
+- Project identity is the filesystem path; `displayName` is optional presentation metadata.
 - Send chat request: `chat:sendMessage(text, mode)`.
 - Cancel chat: `chat:cancel`.
 - Check Caveman routing status: `chat:cavemanStatus`.
 - Terminal lifecycle: `terminal:create` -> `terminal:write` -> `terminal:resize` -> `terminal:stop`.
 - Start/stop/restart environment (IPC exists): `environment:start`, `environment:stop`, `environment:restart`.
 - Preview host/instance list source: `~/.bigin-vibe/instances.json` via `preview:instances`.
-- Git read-only views: `git:status`, `git:diff`.
+- Git status/diff and refresh: `git:status`, `git:diff`, `git:refresh`.

@@ -3,11 +3,6 @@ const path = require("path");
 const os = require("os");
 const { EVENTS } = require("../../shared/events");
 const bus = require("../runtimeBus");
-const {
-  validateBigiBotProjectConfig,
-  buildBigiBotConfigError,
-} = require("../bigibot/BigiBotProjectConfig");
-const { BIGIBOT_FALLBACK_MODE } = require("../../shared/opencodeConfig");
 
 function resolveRecentsFilePath() {
   try {
@@ -350,14 +345,8 @@ function detectProject(projectPath) {
   const projectType = isLyteProject ? "bigin" : "generic";
 
   // --- Knowledge base -------------------------------------------------------
-  // Source of truth is strictly <project>/bigibot.
   const knowledgeBaseDir = path.join(projectPath, "bigibot");
   const hasKnowledgeBase = fs.existsSync(knowledgeBaseDir);
-
-  // --- BigiBot config preflight ---------------------------------------------
-  const bigiBotConfig = validateBigiBotProjectConfig(projectPath);
-  const bigiBotConfigError = bigiBotConfig.ok ? null : buildBigiBotConfigError(bigiBotConfig);
-  const hasBigiBotAgent = !bigiBotConfig.missing.some((item) => item.type === "agent");
 
   // --- Dev setup ------------------------------------------------------------
   const { packageManager, devScript, devEntryPoint, lyteBin, nodeBin } = _detectDevSetup(projectPath, pkg);
@@ -371,10 +360,6 @@ function detectProject(projectPath) {
     lyteSignal,
     hasKnowledgeBase,
     knowledgeBaseDir: hasKnowledgeBase ? knowledgeBaseDir : null,
-    hasBigiBotAgent,
-    hasBigiBotConfig: bigiBotConfig.ok,
-    bigiBotConfigError,
-    bigiBotFallbackMode: BIGIBOT_FALLBACK_MODE,
     packageManager,
     devScript,
     devEntryPoint,
@@ -435,6 +420,9 @@ class ProjectManager {
       path: projectPath,
       name: projectName,
       lastOpenedAt,
+      ...(typeof entry.displayName === "string" && entry.displayName.trim()
+        ? { displayName: entry.displayName.trim() }
+        : {}),
     };
   }
 
@@ -461,13 +449,37 @@ class ProjectManager {
     if (!projectPath) return;
 
     const projectName = path.basename(projectPath);
+    const existing = this.getRecentProjects().find((p) => p.path === projectPath);
     const recents = this.getRecentProjects().filter((p) => p.path !== projectPath);
     recents.unshift({
       path: projectPath,
       name: projectName,
       lastOpenedAt: new Date().toISOString(),
+      ...(existing?.displayName ? { displayName: existing.displayName } : {}),
     });
     this._writeRecents(recents);
+  }
+
+  renameRecentProject(projectPath, displayName) {
+    if (typeof projectPath !== "string" || !projectPath) {
+      throw new Error("A project path is required.");
+    }
+    if (typeof displayName !== "string" || !displayName.trim()) {
+      throw new Error("Project name cannot be empty.");
+    }
+
+    const recents = this.getRecentProjects();
+    const index = recents.findIndex((entry) => entry.path === projectPath);
+    if (index === -1) {
+      throw new Error("The project is not in recent projects.");
+    }
+
+    recents[index] = {
+      ...recents[index],
+      displayName: displayName.trim(),
+    };
+    this._writeRecents(recents);
+    return recents[index];
   }
 
   async openProject(projectPath) {

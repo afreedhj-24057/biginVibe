@@ -68,7 +68,7 @@ export default function ChatMessage({ message }) {
   // assistant
   return (
     <div className="chat-message chat-message-assistant">
-      <div className="chat-message-label">BigiBot</div>
+       <div className="chat-message-label">Assistant</div>
       <MarkdownText text={message.text} />
       <div className="chat-message-meta">
         <button

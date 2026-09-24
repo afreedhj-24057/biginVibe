@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { bridge } from "../../lib/bridge";
+import { normalizePreviewUrl } from "../../shared/previewUrl";
+import { BOOKMARKS } from "../../shared/bookmarks";
 
 /**
  * PreviewManager-equivalent for the renderer: controls an Electron <webview>
@@ -33,6 +35,7 @@ import { bridge } from "../../lib/bridge";
 export default function PreviewPanel({ previewUrl, envRunning, previewGeneration, projectPath }) {
   const webviewRef = useRef(null);
   const addressInputRef = useRef(null);
+  const bookmarksButtonRef = useRef(null);
   const [status, setStatus] = useState("idle"); // idle | loading | loaded | error
   const [errorMessage, setErrorMessage] = useState(null);
 
@@ -50,10 +53,25 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
   const [instances, setInstances] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] = useState(0);
+  const [bookmarksOpen, setBookmarksOpen] = useState(false);
 
   const hasLoadedRef = useRef(false);
   const lastGenerationRef = useRef(0);
   const hideSuggestionsTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (!bookmarksOpen) return undefined;
+
+    function handleWindowKeyDown(event) {
+      if (event.key === "Escape") {
+        setBookmarksOpen(false);
+        bookmarksButtonRef.current?.focus();
+      }
+    }
+
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => window.removeEventListener("keydown", handleWindowKeyDown);
+  }, [bookmarksOpen]);
 
   const filteredInstances = instances.filter((item) => {
     const q = addressValue.trim().toLowerCase();
@@ -155,8 +173,9 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
    */
   function handleAddressSubmit(e) {
     e.preventDefault();
-    const target = addressValue.trim();
+    const target = normalizePreviewUrl(addressValue);
     if (!target) return;
+    setAddressValue(target);
     setErrorMessage(null);
     setStatus("loading");
     if (webviewRef.current) {
@@ -172,20 +191,53 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
   }
 
   function applySuggestion(item) {
-    if (!item?.url) return;
-    setAddressValue(item.url);
+    const target = normalizePreviewUrl(item?.url);
+    if (!target) return;
+    setAddressValue(target);
     setErrorMessage(null);
     setStatus("loading");
     if (webviewRef.current) {
-      webviewRef.current.loadURL(item.url).catch((err) => {
+      webviewRef.current.loadURL(target).catch((err) => {
         setStatus("error");
         setErrorMessage(err.message || String(err));
       });
     }
-    setLoadedUrl(item.url);
+    setLoadedUrl(target);
     hasLoadedRef.current = true;
     setShowSuggestions(false);
     addressInputRef.current?.blur();
+  }
+
+  function openBookmark(bookmark) {
+    const target = normalizePreviewUrl(bookmark?.url);
+    if (!target) return;
+
+    setAddressValue(target);
+    setErrorMessage(null);
+    setStatus("loading");
+    if (webviewRef.current) {
+      webviewRef.current.loadURL(target).catch((err) => {
+        setStatus("error");
+        setErrorMessage(err.message || String(err));
+      });
+    }
+    setLoadedUrl(target);
+    hasLoadedRef.current = true;
+    setBookmarksOpen(false);
+    bookmarksButtonRef.current?.focus();
+  }
+
+  function handleBookmarkKeyDown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setBookmarksOpen(false);
+      bookmarksButtonRef.current?.focus();
+      return;
+    }
+
+    if ((event.key === "Enter" || event.key === " ") && BOOKMARKS.length === 0) {
+      event.preventDefault();
+    }
   }
 
   function handleAddressFocus() {
@@ -356,6 +408,44 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
             )}
           </div>
         </form>
+        <div className="preview-bookmarks-wrap">
+          <button
+            ref={bookmarksButtonRef}
+            type="button"
+            className="preview-bookmarks-btn"
+            aria-label="Open bookmarks"
+            aria-haspopup="menu"
+            aria-expanded={bookmarksOpen}
+            onClick={() => setBookmarksOpen((open) => !open)}
+            onKeyDown={handleBookmarkKeyDown}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M4 2.5h8v11l-4-2.5-4 2.5v-11Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+            </svg>
+            <span>Bookmarks</span>
+          </button>
+          {bookmarksOpen && (
+            <div className="preview-bookmarks-menu" role="menu" aria-label="Bookmarks">
+              <div className="preview-bookmarks-title">Bookmarks</div>
+              {BOOKMARKS.length === 0 ? (
+                <div className="preview-bookmarks-empty">No bookmarks available</div>
+              ) : (
+                BOOKMARKS.map((bookmark) => (
+                  <button
+                    key={bookmark.id}
+                    type="button"
+                    className="preview-bookmark-item"
+                    role="menuitem"
+                    onClick={() => openBookmark(bookmark)}
+                  >
+                    <span className="preview-bookmark-name">{bookmark.name}</span>
+                    <span className="preview-bookmark-url">{bookmark.url}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
         <div className="preview-actions">
           <button disabled={!loadedUrl} onClick={openDevTools}>
             DevTools

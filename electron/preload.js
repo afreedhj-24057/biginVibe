@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("biginVibe", {
     close: () => ipcRenderer.invoke("project:close"),
     current: () => ipcRenderer.invoke("project:current"),
     recents: () => ipcRenderer.invoke("project:recents"),
+    renameRecent: (projectPath, displayName) => ipcRenderer.invoke("project:renameRecent", projectPath, displayName),
   },
   environment: {
     start: () => ipcRenderer.invoke("environment:start"),
@@ -35,6 +36,8 @@ contextBridge.exposeInMainWorld("biginVibe", {
     sendMessage: (payload, mode) => ipcRenderer.invoke("chat:sendMessage", payload, mode),
     cancel: () => ipcRenderer.invoke("chat:cancel"),
     model: () => ipcRenderer.invoke("chat:model"),
+    models: (forceRefresh) => ipcRenderer.invoke("chat:models", forceRefresh),
+    agents: () => ipcRenderer.invoke("chat:agents"),
     cavemanStatus: () => ipcRenderer.invoke("chat:cavemanStatus"),
     listSessions: () => ipcRenderer.invoke("chat:listSessions"),
     newSession: (payload) => ipcRenderer.invoke("chat:newSession", payload),
@@ -49,7 +52,10 @@ contextBridge.exposeInMainWorld("biginVibe", {
   },
   git: {
     status: () => ipcRenderer.invoke("git:status"),
+    statusModel: () => ipcRenderer.invoke("git:statusModel"),
+    refresh: () => ipcRenderer.invoke("git:refresh"),
     diff: (filePath) => ipcRenderer.invoke("git:diff", filePath),
+    diffCached: (filePath) => ipcRenderer.invoke("git:diffCached", filePath),
   },
   events: {
     subscribe: (callback) => {

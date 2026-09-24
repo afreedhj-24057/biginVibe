@@ -100,8 +100,8 @@ class TerminalManager {
     const shell = process.platform === "win32"
       ? (process.env.ComSpec || "cmd.exe")
       : (process.env.SHELL || "/bin/zsh");
-    const shellArgs = process.platform === "win32" ? [] : ["-l"];
-
+    // const shellArgs = process.platform === "win32" ? [] : ["-l"]; NTC
+    const shellArgs = process.platform === "win32" ? [] : ["-il"];
     const ptyProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
       cols,

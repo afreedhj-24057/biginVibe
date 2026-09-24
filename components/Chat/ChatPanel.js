@@ -3,6 +3,23 @@ import { useEffect, useRef, useState } from "react";
 import { bridge } from "../../lib/bridge";
 import ChatMessage from "./ChatMessage";
 
+function SessionListSkeleton() {
+  return (
+    <div className="chat-sessions-skeleton" role="status" aria-label="Loading sessions">
+      <span className="chat-sessions-skeleton-label" aria-hidden="true" />
+      {["one", "two", "three", "four"].map((key) => (
+        <div key={key} className="chat-session-row chat-session-row-skeleton" aria-hidden="true">
+          <div className="chat-session-skeleton-copy">
+            <span className="chat-session-skeleton-title" />
+            {/* <span className="chat-session-skeleton-meta" /> */}
+          </div>
+          <span className="chat-session-skeleton-action" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /**
  * Chat: user requests, assistant responses, and a live activity trace
  * (tool calls, file changes, errors, completion) driven by agent.* events
@@ -11,6 +28,8 @@ import ChatMessage from "./ChatMessage";
 export default function ChatPanel({
   project,
   sessions = [],
+  sessionListStatus = "idle",
+  sessionListError = "",
   activeSessionId = null,
   onOpenSession,
   onNewSession,
@@ -20,13 +39,19 @@ export default function ChatPanel({
   messages,
   onSend,
   agentWorking,
-  activeModel,
   cavemanStatus = null,
   activityEntries = [],
   activityExpanded = false,
   onToggleActivityExpanded,
-  selectedAgentMode = "build",
-  onAgentModeChange,
+  agents = [],
+  selectedAgent = "",
+  onAgentChange,
+  models = [],
+  selectedModelValue = "",
+  onModelChange,
+  modelLoading = false,
+  modelLoadError = "",
+  onRefreshModels,
 }) {
   const [text, setText] = useState("");
   const [sessionQuery, setSessionQuery] = useState("");
@@ -41,8 +66,8 @@ export default function ChatPanel({
   const [sending, setSending] = useState(false);
   const processing = sending || agentWorking;
   const textareaRef = useRef(null);
-  const hasBigiBotAgent = !!project?.hasBigiBotAgent;
-  const effectiveAgentMode = hasBigiBotAgent ? selectedAgentMode : "build";
+  const messagesRef = useRef(null);
+  const scrollMessagesOnOpenRef = useRef(false);
 
   const filteredSessions = sessions.filter((session) => {
     if (!sessionQuery.trim()) return true;
@@ -77,19 +102,18 @@ export default function ChatPanel({
   const orderedGroups = ["TODAY", "YESTERDAY", "LAST 7 DAYS", "OLDER"];
   const activeSessionTitle = sessions.find((session) => session.id === activeSessionId)?.title || "New chat";
 
-  function prettyModelName(model) {
-    if (!model) return "Unknown model";
-    const raw = model.includes("/") ? model.split("/")[1] : model;
-    if (!raw) return "Unknown model";
-    return raw
-      .split("-")
-      .map((part) => {
-        if (/^gpt$/i.test(part)) return "GPT";
-        if (/^codex$/i.test(part)) return "Codex";
-        return part.charAt(0).toUpperCase() + part.slice(1);
-      })
-      .join(" ");
-  }
+  const hasModels = Array.isArray(models) && models.length > 0;
+  const modelGroups = models.reduce((groups, model) => {
+    const key = model.providerID || model.providerName || model.value.split("/")[0] || "Other";
+    if (!groups[key]) {
+      groups[key] = {
+        label: model.providerName || key,
+        models: [],
+      };
+    }
+    groups[key].models.push(model);
+    return groups;
+  }, {});
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -111,6 +135,20 @@ export default function ChatPanel({
       setSessionListOpen(true);
     }
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!scrollMessagesOnOpenRef.current || sessionListOpen || !activeSessionId) return;
+
+    const frame = requestAnimationFrame(() => {
+      const messagesElement = messagesRef.current;
+      if (messagesElement) {
+        messagesElement.scrollTop = messagesElement.scrollHeight;
+      }
+      scrollMessagesOnOpenRef.current = false;
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [activeSessionId, messages, sessionListOpen]);
 
   useEffect(() => {
     if (!deleteConfirmSessionId) return;
@@ -168,6 +206,7 @@ export default function ChatPanel({
   async function handleNewChat() {
     if (!onNewSession || processing) return;
     setActingSessionId("new");
+    scrollMessagesOnOpenRef.current = true;
     try {
       await onNewSession();
       setSessionSearchOpen(false);
@@ -181,6 +220,7 @@ export default function ChatPanel({
   async function handleOpenSession(sessionId) {
     if (!onOpenSession) return;
     setActingSessionId(sessionId);
+    scrollMessagesOnOpenRef.current = true;
     try {
       await onOpenSession(sessionId);
       setSessionSearchOpen(false);
@@ -404,8 +444,14 @@ export default function ChatPanel({
                 </div>
               );
             })}
-            {!filteredSessions.length && (
+            {(sessionListStatus === "idle" || sessionListStatus === "loading") && project && <SessionListSkeleton />}
+            {sessionListStatus === "success" && !sessions.length && (
               <div className="chat-sessions-empty">No sessions found.</div>
+            )}
+            {sessionListStatus === "error" && (
+              <div className="chat-sessions-error" role="alert">
+                Unable to load sessions{sessionListError ? `: ${sessionListError}` : "."}
+              </div>
             )}
           </div>
           {sessionMenuOpenId && (
@@ -443,7 +489,7 @@ export default function ChatPanel({
         </div>
       ) : (
       <>
-      <div className="chat-messages">
+      <div className="chat-messages" ref={messagesRef}>
         {messages.length === 0 && (
           <div className="chat-empty">
             Ask BigiBot to change something in your Bigin project, e.g. “Change the deal card to
@@ -530,17 +576,52 @@ export default function ChatPanel({
               <select
                 id="chat-agent-selector"
                 className="chat-inline-select"
-                value={effectiveAgentMode}
-                onChange={(e) => onAgentModeChange(e.target.value)}
-                disabled={processing}
-              >
-                <option value="build">Build</option>
-                {hasBigiBotAgent && <option value="bigibot">BigiBot</option>}
+                 value={selectedAgent}
+                 onChange={(e) => onAgentChange?.(e.target.value)}
+                 disabled={processing}
+               >
+                 {agents.map((agent) => (
+                   <option key={agent.name} value={agent.name}>
+                     {agent.name}
+                   </option>
+                 ))}
               </select>
               </div>
-              <button type="button" className="chat-inline-pill" disabled>
-                {prettyModelName(activeModel)}
-              </button>
+              <div className="chat-inline-select-wrap">
+                <select
+                  id="chat-model-selector"
+                  className="chat-inline-select chat-model-select"
+                  value={selectedModelValue || ""}
+                  onChange={(e) => onModelChange?.(e.target.value)}
+                  disabled={processing || modelLoading || !hasModels}
+                  title={modelLoadError || "Select model"}
+                >
+                  {!hasModels && (
+                    <option value="">
+                      {modelLoading ? "Loading models..." : modelLoadError ? "Models unavailable" : "No models"}
+                    </option>
+                  )}
+                   {hasModels && Object.entries(modelGroups).map(([providerID, group]) => (
+                     <optgroup key={providerID} label={group.label}>
+                       {group.models.map((model) => (
+                         <option key={model.value} value={model.value}>
+                           {model.modelName || model.label || model.value}
+                         </option>
+                       ))}
+                     </optgroup>
+                   ))}
+                </select>
+              </div>
+              {/* <button
+                type="button"
+                className="chat-inline-pill"
+                disabled={processing || modelLoading}
+                onClick={() => onRefreshModels?.()}
+                title={modelLoadError ? `Retry model list: ${modelLoadError}` : "Refresh model list"}
+                aria-label="Refresh model list"
+              >
+                {modelLoading ? "Loading..." : "Refresh"}
+              </button> */}
               {processing && cavemanStatus?.routingActive && (
                 <div
                   className="chat-caveman-runtime chat-caveman-runtime-inline"

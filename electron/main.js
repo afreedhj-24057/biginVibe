@@ -8,8 +8,8 @@ const workspaceManager = require("../services/workspace/WorkspaceManager");
 const EnvironmentManager = require("../services/environment/EnvironmentManager");
 const TerminalManager = require("../services/terminal/TerminalManager");
 const GitManager = require("../services/git/GitManager");
+const GitStatusManager = require("../services/git/GitStatusManager");
 const BigiBotService = require("../services/bigibot/BigiBotService");
-const { BIGIBOT_MODEL } = require("../shared/opencodeConfig");
 const runtimeBus = require("../services/runtimeBus");
 const { configurePreviewClientCertificatePolicy } = require("../services/preview/PreviewClientCertificatePolicy");
 const { configurePreviewStaticResourceInterceptor, setLocalStaticServerPort } = require("../services/preview/PreviewStaticResourceInterceptor");
@@ -25,6 +25,7 @@ const terminalManager = new TerminalManager();
 // terminalManager constructed first so it can be injected here.
 const environmentManager = new EnvironmentManager({ terminalManager });
 const gitManager = new GitManager();
+const gitStatusManager = new GitStatusManager({ workspaceManager, gitManager });
 const bigiBot = new BigiBotService();
 
 // Wire WorkspaceManager with all service dependencies. This is done once,
@@ -36,6 +37,7 @@ workspaceManager.injectDependencies({
   terminalManager,
   projectManager,
 });
+gitStatusManager.start();
 
 // Keep the workspace snapshot's env state in sync whenever EnvironmentManager
 // emits environment lifecycle events. This lets workspace:current always
@@ -144,6 +146,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", async () => {
+  gitStatusManager.stop();
   await environmentManager.stop().catch(() => {});
   terminalManager.closeAll();
   await bigiBot.shutdown().catch(() => {});
@@ -151,6 +154,7 @@ app.on("window-all-closed", async () => {
 });
 
 app.on("before-quit", async () => {
+  gitStatusManager.stop();
   await environmentManager.stop().catch(() => {});
   terminalManager.closeAll();
   await bigiBot.shutdown().catch(() => {});
@@ -233,6 +237,9 @@ ipcMain.handle("project:close", async () => {
 
 ipcMain.handle("project:current", () => workspaceManager.getActiveProject());
 ipcMain.handle("project:recents", () => projectManager.getRecentProjects());
+ipcMain.handle("project:renameRecent", async (_evt, projectPath, displayName) => (
+  projectManager.renameRecentProject(projectPath, displayName)
+));
 
 // ---------------------------------------------------------------------------
 // IPC: Environment (dev server + redirector + preview URL)
@@ -297,12 +304,10 @@ ipcMain.handle("chat:newSession", async (_evt, payload = {}) => {
   const project = workspaceManager.getActiveProject();
   if (!project) throw new Error("No project is open.");
 
-  const mode = payload?.mode === "bigibot" && project.hasBigiBotAgent ? "bigibot" : "build";
   const title = typeof payload?.title === "string" ? payload.title.trim() : "";
   const parentID = typeof payload?.parentID === "string" ? payload.parentID.trim() : "";
 
   const session = await bigiBot.createSession(project, {
-    mode,
     ...(title ? { title } : {}),
     ...(parentID ? { parentID } : {}),
   });
@@ -360,8 +365,7 @@ ipcMain.handle("chat:sendMessage", async (_evt, payload, maybeMode) => {
   const text = isLegacy ? payload : String(payload?.text || "");
   if (!text.trim()) throw new Error("Message text cannot be empty.");
 
-  const requestedMode = isLegacy ? maybeMode : payload?.mode;
-  const effectiveMode = requestedMode === "bigibot" && project.hasBigiBotAgent ? "bigibot" : "build";
+  const requestedAgent = isLegacy ? null : String(payload?.agent || "").trim();
 
   const requestedSessionId = isLegacy ? null : payload?.sessionId;
   if (typeof requestedSessionId === "string" && requestedSessionId.trim()) {
@@ -369,10 +373,14 @@ ipcMain.handle("chat:sendMessage", async (_evt, payload, maybeMode) => {
   }
 
   const requestedTitle = isLegacy ? "" : String(payload?.sessionTitle || "").trim();
+
+  const requestedModel = isLegacy ? null : payload?.model;
+
   const result = await bigiBot.sendRequest(project, text, {
-    mode: effectiveMode,
     ...(requestedSessionId ? { sessionId: requestedSessionId.trim() } : {}),
     ...(requestedTitle ? { title: requestedTitle } : {}),
+    ...(requestedAgent ? { agent: requestedAgent } : {}),
+    ...(requestedModel ? { model: requestedModel } : {}),
   });
 
   const sessionId = bigiBot.opencode.getActiveSessionId(project);
@@ -383,7 +391,28 @@ ipcMain.handle("chat:cancel", async () => {
   const project = workspaceManager.getActiveProject();
   if (project) await bigiBot.cancel(project);
 });
-ipcMain.handle("chat:model", async () => BIGIBOT_MODEL);
+ipcMain.handle("chat:model", async () => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) return null;
+  return bigiBot.getModels(project).then((result) => {
+    const model = result?.defaultModel;
+    return model?.providerID && model?.modelID
+      ? `${model.providerID}/${model.modelID}`
+      : null;
+  });
+});
+ipcMain.handle("chat:models", async (_evt, forceRefresh = false) => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) {
+    return { models: [], defaultModel: null, fetchedAt: Date.now() };
+  }
+  return bigiBot.getModels(project, !!forceRefresh);
+});
+ipcMain.handle("chat:agents", async () => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) return [];
+  return bigiBot.getAgents(project);
+});
 ipcMain.handle("chat:cavemanStatus", async () => {
   return bigiBot.getCavemanStatus();
 });
@@ -398,8 +427,15 @@ ipcMain.handle("git:status", async () => {
   if (!project) return [];
   return gitManager.status(project.path);
 });
+ipcMain.handle("git:statusModel", () => gitStatusManager.getStatus());
+ipcMain.handle("git:refresh", async () => gitStatusManager.refresh({ fetchRemote: true }));
 ipcMain.handle("git:diff", async (_evt, filePath) => {
   const project = workspaceManager.getActiveProject();
   if (!project) return "";
   return gitManager.diff(project.path, filePath);
+});
+ipcMain.handle("git:diffCached", async (_evt, filePath) => {
+  const project = workspaceManager.getActiveProject();
+  if (!project) return "";
+  return gitManager.diffCached(project.path, filePath);
 });

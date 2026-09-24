@@ -72,14 +72,6 @@ export default function ProjectControls({ project, onProjectOpened }) {
                   ⚠ not detected as Lyte
                 </span>
               )}
-              {!project.hasBigiBotConfig && (
-                <span
-                  className="badge-warning"
-                  title={project.bigiBotConfigError || "Project BigiBot config is incomplete."}
-                >
-                  ⚠ Running without project BigiBot config.
-                </span>
-              )}
             </span>
             <button disabled={busy} onClick={handleSwitch}>
               Switch Project

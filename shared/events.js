@@ -50,6 +50,9 @@ const EVENTS = {
   // "the foreground process in this session was just interrupted."
   TERMINAL_INTERRUPT: "terminal.interrupt",
 
+  // Git status
+  GIT_STATUS: "git.status.updated",
+
   // Preview
   PREVIEW_LOADING: "preview.loading",
   PREVIEW_LOADED: "preview.loaded",
