@@ -32,7 +32,7 @@ import { BOOKMARKS } from "../../shared/bookmarks";
  *     on every unrelated re-render.
  * ---------------------------------------------------------------------------
  */
-export default function PreviewPanel({ previewUrl, envRunning, previewGeneration, projectPath }) {
+export default function PreviewPanel({ previewUrl, envRunning, previewGeneration, projectPath, onElementSelected }) {
   const webviewRef = useRef(null);
   const addressInputRef = useRef(null);
   const bookmarksButtonRef = useRef(null);
@@ -54,6 +54,9 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] = useState(0);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [pickerActive, setPickerActive] = useState(false);
+  const pickerRunRef = useRef(null);
+  const webviewReadyRef = useRef(false);
 
   const hasLoadedRef = useRef(false);
   const lastGenerationRef = useRef(0);
@@ -87,7 +90,226 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
     setStatus("idle");
     setErrorMessage(null);
     hasLoadedRef.current = false;
+    webviewReadyRef.current = false;
+    setPickerActive(false);
+    pickerRunRef.current = null;
   }, [projectPath]);
+
+  useEffect(() => {
+    cancelPicker();
+    onElementSelected?.(null);
+  }, [previewGeneration]);
+
+  function executePickerScript(script) {
+    const webview = webviewRef.current;
+    if (!webview || !webviewReadyRef.current || typeof webview.executeJavaScript !== "function") {
+      return Promise.resolve(null);
+    }
+    try {
+      return Promise.resolve(webview.executeJavaScript(`(${script})()`, true)).catch(() => null);
+    } catch {
+      return Promise.resolve(null);
+    }
+  }
+
+  const pickerCleanupScript = `function () {
+    const state = window.__biginVibeElementPicker;
+    if (!state) return true;
+    state.active = false;
+    document.removeEventListener("mousemove", state.onMouseMove, true);
+    document.removeEventListener("click", state.onClick, true);
+    document.removeEventListener("mousedown", state.onMouseDown, true);
+    document.removeEventListener("mouseup", state.onMouseUp, true);
+    document.removeEventListener("pointerdown", state.onPointerDown, true);
+    document.removeEventListener("pointerup", state.onPointerUp, true);
+    document.removeEventListener("touchstart", state.onTouchStart, true);
+    document.removeEventListener("touchend", state.onTouchEnd, true);
+    document.removeEventListener("contextmenu", state.onContextMenu, true);
+    document.removeEventListener("keydown", state.onKeyDown, true);
+    if (state.finalizeTimer) clearTimeout(state.finalizeTimer);
+    state.highlight?.remove();
+    state.tooltip?.remove();
+    delete window.__biginVibeElementPicker;
+    return true;
+  }`;
+
+  const pickerScript = `function () {
+    const previous = window.__biginVibeElementPicker;
+    if (previous) previous.active = false;
+    const root = document.documentElement;
+    if (!root) return null;
+    const highlight = document.createElement("div");
+    const tooltip = document.createElement("div");
+    const baseStyle = "position:fixed;z-index:2147483646;pointer-events:none;box-sizing:border-box;";
+    highlight.setAttribute("aria-hidden", "true");
+    highlight.style.cssText = baseStyle + "border:2px solid #1976d2;background:rgba(25,118,210,.08);display:none;";
+    tooltip.setAttribute("aria-hidden", "true");
+    tooltip.style.cssText = baseStyle + "display:none;max-width:360px;padding:4px 7px;border-radius:4px;background:#17202b;color:#fff;font:12px/1.3 monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 8px rgba(0,0,0,.35);";
+    root.append(highlight, tooltip);
+    const state = { active: true, highlight, tooltip, target: null, pendingTarget: null, pendingContext: null, finalizeTimer: null };
+    window.__biginVibeElementPicker = state;
+    const labelFor = (element) => {
+      const tag = element.tagName.toLowerCase();
+      const id = element.id ? "#" + element.id : "";
+      const classes = typeof element.className === "string" ? element.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2).map((value) => "." + value).join("") : "";
+      return tag + id + classes;
+    };
+    const visibleText = (element) => String(element.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 240);
+    const update = (element, event) => {
+      if (!element || element === highlight || element === tooltip || element.nodeType !== 1) {
+        highlight.style.display = "none";
+        tooltip.style.display = "none";
+        state.target = null;
+        return;
+      }
+      const rect = element.getBoundingClientRect();
+      if (!rect.width && !rect.height) return;
+      state.target = element;
+      highlight.style.display = "block";
+      highlight.style.left = rect.left + "px";
+      highlight.style.top = rect.top + "px";
+      highlight.style.width = rect.width + "px";
+      highlight.style.height = rect.height + "px";
+      tooltip.textContent = labelFor(element);
+      tooltip.style.display = "block";
+      tooltip.style.left = Math.max(4, Math.min(window.innerWidth - 364, event.clientX + 12)) + "px";
+      tooltip.style.top = Math.max(4, Math.min(window.innerHeight - 30, event.clientY + 12)) + "px";
+    };
+    const selectorPart = (element) => {
+      const tag = element.tagName.toLowerCase();
+      if (element.id && /^[A-Za-z][A-Za-z0-9_:\\-]*$/.test(element.id)) return "#" + CSS.escape(element.id);
+      const data = Array.from(element.attributes || []).find((attribute) => /^data-/.test(attribute.name) && attribute.value && attribute.value.length < 100);
+      if (data) return tag + "[" + data.name + '=\\\"' + CSS.escape(data.value) + '\\\"]';
+      const classes = typeof element.className === "string" ? element.className.trim().split(/\\s+/).filter((value) => /^[A-Za-z0-9_-]+$/.test(value)).slice(0, 2) : [];
+      return tag + classes.map((value) => "." + CSS.escape(value)).join("");
+    };
+    const selectorFor = (element) => {
+      const parts = [];
+      let current = element;
+      for (let depth = 0; current && current.nodeType === 1 && depth < 6; depth += 1, current = current.parentElement) {
+        const part = selectorPart(current);
+        parts.unshift(part);
+        if (part.startsWith("#")) break;
+        if (current.parentElement) {
+          const siblings = Array.from(current.parentElement.children).filter((item) => item.tagName === current.tagName);
+          if (siblings.length > 1) parts[0] += ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")";
+        }
+      }
+      return parts.join(" > ");
+    };
+    const attributesFor = (element) => {
+      const result = {};
+      const type = String(element.getAttribute("type") || "").toLowerCase();
+      const sensitive = type === "password" || /password|token|secret/i.test(String(element.name || ""));
+      for (const attribute of Array.from(element.attributes || [])) {
+        if (!(/^(data-|aria-|role$|name$|type$|href$|title$|placeholder$)/i.test(attribute.name))) continue;
+        if (!attribute.value || attribute.value.length > 240) continue;
+        result[attribute.name] = attribute.value;
+      }
+      if (!sensitive && "value" in element && String(element.value || "").length < 240) result.value = String(element.value || "");
+      return result;
+    };
+    const contextFor = (element) => {
+      const hierarchy = [];
+      let current = element;
+      for (let depth = 0; current && current.nodeType === 1 && depth < 5; depth += 1, current = current.parentElement) hierarchy.unshift(labelFor(current));
+      const rect = element.getBoundingClientRect();
+      const type = String(element.getAttribute("type") || "").toLowerCase();
+      const sensitive = type === "password" || /password|token|secret/i.test(String(element.name || ""));
+      return {
+        tagName: element.tagName.toLowerCase(), id: element.id || "", classes: typeof element.className === "string" ? element.className.trim().split(/\\s+/).filter(Boolean).slice(0, 20) : [],
+        attributes: attributesFor(element), text: sensitive ? "" : visibleText(element), selector: selectorFor(element), hierarchy, path: hierarchy.join(" > "),
+        boundingRect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }
+      };
+    };
+    const finish = (result) => {
+      state.active = false;
+      document.removeEventListener("mousemove", state.onMouseMove, true);
+      document.removeEventListener("click", state.onClick, true);
+      document.removeEventListener("mousedown", state.onMouseDown, true);
+      document.removeEventListener("mouseup", state.onMouseUp, true);
+      document.removeEventListener("pointerdown", state.onPointerDown, true);
+      document.removeEventListener("pointerup", state.onPointerUp, true);
+      document.removeEventListener("touchstart", state.onTouchStart, true);
+      document.removeEventListener("touchend", state.onTouchEnd, true);
+      document.removeEventListener("contextmenu", state.onContextMenu, true);
+      document.removeEventListener("keydown", state.onKeyDown, true);
+      if (state.finalizeTimer) clearTimeout(state.finalizeTimer);
+      highlight.remove(); tooltip.remove(); delete window.__biginVibeElementPicker;
+      return result;
+    };
+    state.onMouseMove = (event) => update(document.elementFromPoint(event.clientX, event.clientY), event);
+    state.captureTarget = (event) => {
+      const target = state.target || document.elementFromPoint(event.clientX, event.clientY);
+      if (target && target.nodeType === 1) state.pendingTarget = target;
+    };
+    state.finalizeSelection = () => {
+      if (!state.pendingContext || !state.active) return;
+      window.__biginVibePickerResult = finish(state.pendingContext);
+    };
+    state.scheduleSelection = (event) => {
+      state.captureTarget(event);
+      if (event.button !== undefined && event.button !== 0) state.pendingTarget = null;
+      if (!state.pendingTarget) return;
+      state.pendingContext = contextFor(state.pendingTarget);
+      if (state.finalizeTimer) clearTimeout(state.finalizeTimer);
+      // Normally the following click handler completes selection. The timer
+      // covers platforms that suppress the synthetic click after preventDefault.
+      state.finalizeTimer = setTimeout(state.finalizeSelection, 100);
+    };
+    state.onMouseDown = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); state.captureTarget(event); };
+    state.onMouseUp = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); state.scheduleSelection(event); };
+    state.onPointerDown = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); state.captureTarget(event); };
+    state.onPointerUp = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); state.scheduleSelection(event); };
+    state.onTouchStart = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); state.captureTarget(event.touches[0] || event); };
+    state.onTouchEnd = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); state.scheduleSelection(event.changedTouches[0] || event); };
+    state.onClick = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); state.captureTarget(event); const target = state.pendingTarget || state.target; if (target) { state.pendingContext = contextFor(target); state.finalizeSelection(); } };
+    state.onContextMenu = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); };
+    state.onKeyDown = (event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation(); window.__biginVibePickerResult = finish(null); } };
+    document.addEventListener("mousemove", state.onMouseMove, true);
+    document.addEventListener("mousedown", state.onMouseDown, true);
+    document.addEventListener("mouseup", state.onMouseUp, true);
+    document.addEventListener("pointerdown", state.onPointerDown, true);
+    document.addEventListener("pointerup", state.onPointerUp, true);
+    document.addEventListener("touchstart", state.onTouchStart, true);
+    document.addEventListener("touchend", state.onTouchEnd, true);
+    document.addEventListener("click", state.onClick, true);
+    document.addEventListener("contextmenu", state.onContextMenu, true);
+    document.addEventListener("keydown", state.onKeyDown, true);
+    return new Promise((resolve) => {
+      const poll = () => { if (window.__biginVibePickerResult !== undefined) { const result = window.__biginVibePickerResult; delete window.__biginVibePickerResult; resolve(result); } else if (state.active) setTimeout(poll, 50); else resolve(null); };
+      poll();
+    });
+  }`;
+
+  async function cancelPicker() {
+    pickerRunRef.current = null;
+    setPickerActive(false);
+    await executePickerScript(pickerCleanupScript).catch(() => {});
+  }
+
+  async function togglePicker() {
+    if (pickerActive) {
+      await cancelPicker();
+      return;
+    }
+    if (!webviewRef.current || !webviewReadyRef.current || !loadedUrl) return;
+    setPickerActive(true);
+    const run = executePickerScript(pickerScript);
+    pickerRunRef.current = run;
+    try {
+      const result = await run;
+      if (pickerRunRef.current !== run) return;
+      pickerRunRef.current = null;
+      setPickerActive(false);
+      if (result) onElementSelected?.(result);
+    } catch {
+      if (pickerRunRef.current === run) {
+        pickerRunRef.current = null;
+        setPickerActive(false);
+      }
+    }
+  }
 
   // Establish (or re-establish) the initial address-bar/webview URL from
   // the dev server's resolved previewUrl — but only on the first-ever load
@@ -129,6 +351,9 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
     const el = webviewRef.current;
     if (!el) return;
 
+    const onDomReady = () => {
+      webviewReadyRef.current = true;
+    };
     const onStartLoading = () => setStatus("loading");
     const onStopLoading = () => setStatus((s) => (s === "error" ? s : "loaded"));
     const onFailLoad = (e) => {
@@ -141,28 +366,40 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
     // navigates around inside the app itself (SPA route changes), exactly
     // like a real browser's address bar.
     const onDidNavigate = (e) => {
+      webviewReadyRef.current = false;
+      cancelPicker();
+      onElementSelected?.(null);
       setAddressValue(e.url);
       setCanGoBack(el.canGoBack());
       setCanGoForward(el.canGoForward());
     };
     const onDidNavigateInPage = (e) => {
+      cancelPicker();
+      onElementSelected?.(null);
       setAddressValue(e.url);
       setCanGoBack(el.canGoBack());
       setCanGoForward(el.canGoForward());
     };
 
+    el.addEventListener("dom-ready", onDomReady);
     el.addEventListener("did-start-loading", onStartLoading);
     el.addEventListener("did-stop-loading", onStopLoading);
     el.addEventListener("did-fail-load", onFailLoad);
     el.addEventListener("did-navigate", onDidNavigate);
     el.addEventListener("did-navigate-in-page", onDidNavigateInPage);
     return () => {
+      el.removeEventListener("dom-ready", onDomReady);
       el.removeEventListener("did-start-loading", onStartLoading);
       el.removeEventListener("did-stop-loading", onStopLoading);
       el.removeEventListener("did-fail-load", onFailLoad);
       el.removeEventListener("did-navigate", onDidNavigate);
       el.removeEventListener("did-navigate-in-page", onDidNavigateInPage);
     };
+  }, [loadedUrl, onElementSelected]);
+
+  useEffect(() => () => {
+    webviewReadyRef.current = false;
+    executePickerScript(pickerCleanupScript).catch(() => {});
   }, [loadedUrl]);
 
   /**
@@ -284,6 +521,8 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
   }
 
   function reload() {
+    cancelPicker();
+    onElementSelected?.(null);
     webviewRef.current?.reload();
   }
 
@@ -447,6 +686,17 @@ export default function PreviewPanel({ previewUrl, envRunning, previewGeneration
           )}
         </div>
         <div className="preview-actions">
+          <button
+            type="button"
+            className={`preview-picker-btn ${pickerActive ? "is-active" : ""}`}
+            disabled={!loadedUrl}
+            onClick={togglePicker}
+            aria-pressed={pickerActive}
+            aria-label={pickerActive ? "Pick Element active" : "Pick Element"}
+            title={pickerActive ? "Cancel element picker" : "Pick an element from the preview"}
+          >
+            {pickerActive ? "Pick Element — Active" : "Pick Element"}
+          </button>
           <button disabled={!loadedUrl} onClick={openDevTools}>
             DevTools
           </button>

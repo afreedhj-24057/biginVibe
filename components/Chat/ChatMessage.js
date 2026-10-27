@@ -1,6 +1,37 @@
 "use client";
 import { useState } from "react";
 import MarkdownText from "./MarkdownText";
+import AttachmentPreviewModal from "./AttachmentPreviewModal";
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentList({ attachments = [] }) {
+  const [previewAttachment, setPreviewAttachment] = useState(null);
+  if (!attachments.length) return null;
+  return (
+    <>
+      <div className="chat-message-attachments" aria-label="Attachments">
+        {attachments.map((attachment, index) => (
+          <button type="button" className="chat-message-attachment" key={`${attachment.name}-${index}`} onClick={() => setPreviewAttachment(attachment)} aria-label={`Open preview for ${attachment.name || "attachment"}`}>
+          {attachment.mime?.startsWith("image/") && attachment.dataUrl ? (
+            <img src={attachment.dataUrl} alt={attachment.name || "Attached image"} className="chat-message-attachment-image" />
+          ) : <span className="chat-message-attachment-icon" aria-hidden="true">FILE</span>}
+          <span>
+            <strong>{attachment.name || "Attached file"}</strong>
+            {attachment.size ? <small>{formatBytes(attachment.size)} · {attachment.mime}</small> : <small>{attachment.mime}</small>}
+          </span>
+          </button>
+        ))}
+      </div>
+      <AttachmentPreviewModal attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
+    </>
+  );
+}
 
 const ICONS = {
   tool_completed: "✓",
@@ -42,6 +73,7 @@ export default function ChatMessage({ message }) {
     return (
       <div className="chat-message chat-message-user">
         <div className="chat-message-label">You</div>
+        <AttachmentList attachments={message.attachments} />
         <MarkdownText text={message.text} />
       </div>
     );

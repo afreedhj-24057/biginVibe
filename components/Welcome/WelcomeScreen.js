@@ -120,8 +120,9 @@ export default function WelcomeScreen({
                   <div className="welcome-recent-time">{formatLastOpened(item.lastOpenedAt)}</div>
                 </div>
               ) : (
-                <button
-                  type="button"
+                <div
+                  tabIndex="0"
+                  role="button"
                   className="welcome-recent-open"
                   onClick={() => onOpenRecent(item)}
                   disabled={busy}
@@ -132,7 +133,7 @@ export default function WelcomeScreen({
                   </div>
                   <div className="welcome-recent-path">{formatPathForCard(item.path)}</div>
                   <div className="welcome-recent-time">{formatLastOpened(item.lastOpenedAt)}</div>
-                </button>
+                </div>
               )}
               {renamingPath !== item.path ? (
                 <button type="button" className="welcome-recent-rename-btn" onClick={(event) => startRename(event, item)} disabled={busy} aria-label={`Rename ${item.displayName || item.name || "project"}`} title="Rename project">Rename</button>

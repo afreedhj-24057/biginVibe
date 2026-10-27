@@ -427,14 +427,24 @@ function normalizeSessionMessages(messages) {
     if (!info || (info.role !== "user" && info.role !== "assistant")) continue;
 
     const text = extractTextFromParts(item?.parts, info.role === "assistant" ? info.id : null);
-    if (!text) continue;
+    const attachments = Array.isArray(item?.parts)
+      ? item.parts
+        .filter((part) => part?.type === "file" && typeof part.mime === "string" && typeof part.url === "string")
+        .map((part) => ({
+          name: part.filename || "Attached file",
+          mime: part.mime,
+          dataUrl: part.url,
+          size: dataUrlByteLength(part.url),
+        }))
+      : [];
+    if (!text && !attachments.length) continue;
 
     if (info.role === "user") {
       const normalizedText = sanitizeUserPromptText(text);
-      if (!normalizedText) continue;
       normalized.push({
         role: "user",
         text: normalizedText,
+        attachments,
         opencodeMessageId: info.id,
         createdAt: Number(info.time?.created || 0),
       });
@@ -456,6 +466,15 @@ function normalizeSessionMessages(messages) {
   }
 
   return normalized;
+}
+
+function dataUrlByteLength(url) {
+  if (typeof url !== "string") return 0;
+  const comma = url.indexOf(",");
+  if (comma === -1) return 0;
+  const payload = url.slice(comma + 1);
+  if (!payload || !/;base64/i.test(url.slice(0, comma))) return 0;
+  return Math.floor((payload.length * 3) / 4) - (payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0);
 }
 
 function toPromptModel(input) {
@@ -522,6 +541,8 @@ function normalizeModelCatalog(payload) {
       const modelName = typeof modelInfo?.name === "string" && modelInfo.name.trim()
         ? modelInfo.name.trim()
         : modelID;
+      const supportsAttachments = modelInfo?.attachment === true
+        || modelInfo?.capabilities?.attachment === true;
       out.push({
         providerID,
         providerName,
@@ -529,6 +550,12 @@ function normalizeModelCatalog(payload) {
         modelName,
         label: `${providerName} / ${modelName}`,
         value: `${providerID}/${modelID}`,
+        supportsAttachments,
+        inputModalities: Array.isArray(modelInfo?.modalities?.input)
+          ? modelInfo.modalities.input
+          : Array.isArray(modelInfo?.capabilities?.input)
+            ? modelInfo.capabilities.input
+            : [],
       });
     }
   }
@@ -1129,7 +1156,7 @@ class OpenCodeService {
   /**
    * @param {string} sessionId
    * @param {string} text - the user's natural-language request.
-   * @param {{ agent?: string, model?: { providerID: string, modelID: string } | string }} [options]
+   * @param {{ agent?: string, model?: { providerID: string, modelID: string } | string, attachments?: Array<{ name: string, mime: string, dataUrl: string }> }} [options]
    */
   async sendPrompt(sessionId, text, options = {}) {
     if (!this.opencode) throw new Error("OpenCode server is not running for this project.");
@@ -1153,9 +1180,32 @@ class OpenCodeService {
       label: "Task started",
     });
     try {
+      const attachments = Array.isArray(options.attachments) ? options.attachments : [];
+      const parts = [];
+      if (text && text.trim()) parts.push({ type: "text", text });
+      for (const attachment of attachments) {
+        if (!attachment?.dataUrl || !attachment?.mime || !attachment?.name) {
+          throw new Error("The attachment couldn't be processed. Please try again.");
+        }
+        parts.push({
+          type: "file",
+          mime: attachment.mime,
+          filename: attachment.name,
+          url: attachment.dataUrl,
+        });
+      }
+      if (!parts.length) throw new Error("Message cannot be empty.");
+      if (process.env.BIGINVIBE_CHAT_DEBUG === "true" && attachments.length) {
+        console.info("[OpenCodeService] sending attachment parts", attachments.map((attachment) => ({
+          type: "file",
+          filename: attachment.name,
+          mime: attachment.mime,
+          size: attachment.size,
+        })));
+      }
       const body = {
         ...(selectedModel ? { model: selectedModel } : {}),
-        parts: [{ type: "text", text }],
+        parts,
       };
       if (typeof options.agent === "string" && options.agent.trim()) {
         body.agent = options.agent;

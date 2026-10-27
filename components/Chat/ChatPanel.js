@@ -2,6 +2,14 @@
 import { useEffect, useRef, useState } from "react";
 import { bridge } from "../../lib/bridge";
 import ChatMessage from "./ChatMessage";
+import AttachmentPreviewModal from "./AttachmentPreviewModal";
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function SessionListSkeleton() {
   return (
@@ -38,6 +46,8 @@ export default function ChatPanel({
   onDeleteSession,
   messages,
   onSend,
+  selectedElements = [],
+  onRemoveSelectedElement,
   agentWorking,
   cavemanStatus = null,
   activityEntries = [],
@@ -54,6 +64,9 @@ export default function ChatPanel({
   onRefreshModels,
 }) {
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [previewAttachment, setPreviewAttachment] = useState(null);
   const [sessionQuery, setSessionQuery] = useState("");
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [sessionListOpen, setSessionListOpen] = useState(true);
@@ -137,6 +150,11 @@ export default function ChatPanel({
   }, [activeSessionId]);
 
   useEffect(() => {
+    setAttachments([]);
+    setAttachmentError("");
+  }, [project?.path]);
+
+  useEffect(() => {
     if (!scrollMessagesOnOpenRef.current || sessionListOpen || !activeSessionId) return;
 
     const frame = requestAnimationFrame(() => {
@@ -182,7 +200,7 @@ export default function ChatPanel({
   async function handleSubmit(e) {
     e.preventDefault();
     const value = text.trim();
-    if (!value || processing) return;
+    if ((!value && !attachments.length) || processing) return;
 
     // Enforce the workspace guard at the renderer level as well. The main
     // process enforces it too (chat:sendMessage throws when no project is
@@ -192,14 +210,29 @@ export default function ChatPanel({
       return;
     }
 
+    const pendingAttachments = attachments;
     setText("");
+    setAttachments([]);
     setSending(true);
     try {
-      await onSend(value);
+      await onSend(value, pendingAttachments, selectedElements[0] || null);
     } catch {
+      setText(value);
+      setAttachments(pendingAttachments);
+      setAttachmentError("The attachment couldn't be processed. Please try again.");
       // Parent pipeline emits error rows; avoid duplicate renderer-side rows.
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handlePickAttachments() {
+    setAttachmentError("");
+    try {
+      const selected = await bridge.chat.pickAttachments();
+      if (Array.isArray(selected)) setAttachments((current) => [...current, ...selected]);
+    } catch (err) {
+      setAttachmentError(err?.message || "Unable to read this file.");
     }
   }
 
@@ -209,6 +242,9 @@ export default function ChatPanel({
     scrollMessagesOnOpenRef.current = true;
     try {
       await onNewSession();
+      setAttachments([]);
+      setAttachmentError("");
+      setPreviewAttachment(null);
       setSessionSearchOpen(false);
       setSessionListOpen(false);
       setSessionMenuOpenId(null);
@@ -223,6 +259,9 @@ export default function ChatPanel({
     scrollMessagesOnOpenRef.current = true;
     try {
       await onOpenSession(sessionId);
+      setAttachments([]);
+      setAttachmentError("");
+      setPreviewAttachment(null);
       setSessionSearchOpen(false);
       setSessionListOpen(false);
       setSessionMenuOpenId(null);
@@ -564,14 +603,59 @@ export default function ChatPanel({
               }
             }}
           />
+          {selectedElements.length > 0 && (
+            <div className="chat-selected-element-list" aria-label="Selected preview element">
+              <div className="chat-selected-element-chip">
+                <span aria-hidden="true">⌖</span>
+                <span className="chat-selected-element-label" title={selectedElements[0].selector || selectedElements[0].tagName}>
+                  {selectedElements[0].selector || selectedElements[0].tagName || "Selected element"}
+                </span>
+                <button
+                  type="button"
+                  className="chat-attachment-remove"
+                  onClick={onRemoveSelectedElement}
+                  aria-label="Remove selected element"
+                  title="Remove selected element"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )}
+          {attachments.length > 0 && (
+            <div className="chat-attachment-list" aria-label="Pending attachments">
+              {attachments.map((attachment, index) => (
+                <div className="chat-attachment-chip" key={`${attachment.name}-${index}`} role="button" tabIndex={0} onClick={() => setPreviewAttachment(attachment)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setPreviewAttachment(attachment); } }} aria-label={`Open preview for ${attachment.name || "attachment"}`}>
+                  {attachment.mime.startsWith("image/") ? (
+                    <img src={attachment.dataUrl} alt="" className="chat-attachment-thumb" />
+                  ) : <span className="chat-attachment-icon" aria-hidden="true">FILE</span>}
+                  <span className="chat-attachment-copy">
+                    <strong>{attachment.name}</strong>
+                    <small>{formatBytes(attachment.size)} · {attachment.mime}</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="chat-attachment-remove"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setAttachments((current) => current.filter((_, i) => i !== index));
+                    }}
+                    aria-label={`Remove ${attachment.name}`}
+                    title={`Remove ${attachment.name}`}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <AttachmentPreviewModal attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
+          {attachmentError && <div className="chat-attachment-error" role="alert">{attachmentError}</div>}
           <div className="chat-composer-footer">
             <div className="chat-composer-configs">
-              {/*
-                Reserved for future context picker entry point.
-              */}
-              {/* <button type="button" className="chat-composer-icon" disabled={!project || processing} aria-label="Add context">
-                +
-              </button> */}
+              <button type="button" className="chat-composer-icon" disabled={!project || processing} aria-label="Attach files" title="Attach files" onClick={handlePickAttachments}>+</button>
               <div className="chat-inline-select-wrap">
               <select
                 id="chat-agent-selector"

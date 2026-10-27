@@ -89,6 +89,7 @@ class BigiBotService {
     return this._sendWithRetry(project, sessionId, userRequest, {
       agent: options.agent,
       model: options.model,
+      attachments: options.attachments,
     });
   }
 
